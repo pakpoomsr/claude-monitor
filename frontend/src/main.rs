@@ -21,7 +21,54 @@ enum Tab {
 
 fn main() {
     console_error_panic_hook::set_once();
+    init_theme_from_storage();
     leptos::mount::mount_to_body(App);
+}
+
+/// Read the saved theme (if any) from localStorage and apply it before mount,
+/// so the UI doesn't flash the wrong palette.
+fn init_theme_from_storage() {
+    if let Some(window) = web_sys::window() {
+        if let Ok(Some(storage)) = window.local_storage() {
+            if let Ok(Some(theme)) = storage.get_item("cm-theme") {
+                if theme == "light" || theme == "dark" {
+                    if let Some(doc) = window.document() {
+                        if let Some(el) = doc.document_element() {
+                            let _ = el.set_attribute("data-theme", &theme);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn current_theme() -> String {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.document_element())
+        .and_then(|el| el.get_attribute("data-theme"))
+        .unwrap_or_else(|| {
+            // Fall back to the OS preference so the toggle's first click flips
+            // to the *other* theme rather than re-asserting the OS one.
+            web_sys::window()
+                .and_then(|w| w.match_media("(prefers-color-scheme: light)").ok().flatten())
+                .map(|mql| if mql.matches() { "light".to_string() } else { "dark".to_string() })
+                .unwrap_or_else(|| "dark".to_string())
+        })
+}
+
+fn set_theme(theme: &str) {
+    if let Some(window) = web_sys::window() {
+        if let Some(doc) = window.document() {
+            if let Some(el) = doc.document_element() {
+                let _ = el.set_attribute("data-theme", theme);
+            }
+        }
+        if let Ok(Some(storage)) = window.local_storage() {
+            let _ = storage.set_item("cm-theme", theme);
+        }
+    }
 }
 
 #[component]
@@ -32,6 +79,7 @@ fn App() -> impl IntoView {
     let (toast, set_toast) = signal::<Option<String>>(None);
     let (filter, set_filter) = signal(Filter::Active);
     let (hooks, set_hooks) = signal(HooksStatus::default());
+    let (theme, set_theme_sig) = signal(current_theme());
 
     // Periodically poll hooks_status so the indicator updates when the user
     // toggles registration in the Settings panel. Cheap (single Tauri call).
@@ -137,6 +185,32 @@ fn App() -> impl IntoView {
                         <span class="dot"></span>
                         "HOOKS"
                     </span>
+                    <button
+                        class="theme-toggle"
+                        title=move || if theme.get() == "light" { "Switch to dark theme" } else { "Switch to light theme" }
+                        on:click=move |_| {
+                            let next = if theme.get() == "light" { "dark" } else { "light" };
+                            set_theme(next);
+                            set_theme_sig.set(next.into());
+                        }
+                    >
+                        {move || if theme.get() == "light" {
+                            // moon
+                            view! {
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                                </svg>
+                            }.into_any()
+                        } else {
+                            // sun
+                            view! {
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="12" cy="12" r="4" />
+                                    <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+                                </svg>
+                            }.into_any()
+                        }}
+                    </button>
                 </div>
             </header>
 

@@ -66,12 +66,17 @@ pub fn AgentDetail(
 
                             <section class="detail-section">
                                 <h3>"Tokens"</h3>
+                                <TokenMeter
+                                    input=s.input_tokens
+                                    output=s.output_tokens
+                                    cache=s.cache_tokens
+                                />
                                 <div class="kv-grid">
-                                    <span class="muted">"Input"</span><span>{format_num(s.input_tokens)}</span>
-                                    <span class="muted">"Output"</span><span>{format_num(s.output_tokens)}</span>
-                                    <span class="muted">"Cache"</span><span>{format_num(s.cache_tokens)}</span>
-                                    <span class="muted">"Cost"</span><span>{format!("${:.4}", s.cost_usd)}</span>
-                                    <span class="muted">"Model"</span><span>{s.model.clone()}</span>
+                                    <span>"Input"</span><span>{format_num(s.input_tokens)}</span>
+                                    <span>"Output"</span><span>{format_num(s.output_tokens)}</span>
+                                    <span>"Cache"</span><span>{format_num(s.cache_tokens)}</span>
+                                    <span>"Cost"</span><span>{format!("${:.4}", s.cost_usd)}</span>
+                                    <span>"Model"</span><span>{s.model.clone()}</span>
                                 </div>
                             </section>
 
@@ -86,6 +91,30 @@ pub fn AgentDetail(
                 }
             }}
         </aside>
+    }
+}
+
+#[component]
+fn TokenMeter(input: u64, output: u64, cache: u64) -> impl IntoView {
+    let total = (input + output + cache).max(1);
+    let pct = |n: u64| (n as f64 / total as f64) * 100.0;
+    let in_pct = pct(input);
+    let out_pct = pct(output);
+    let cache_pct = pct(cache);
+
+    view! {
+        <div class="token-meter">
+            <div class="token-meter-bar" title=format!("{} tokens total", format_num(input + output + cache))>
+                <div class="token-meter-seg token-meter-seg--input"  style=format!("width: {:.2}%;", in_pct) />
+                <div class="token-meter-seg token-meter-seg--output" style=format!("width: {:.2}%;", out_pct) />
+                <div class="token-meter-seg token-meter-seg--cache"  style=format!("width: {:.2}%;", cache_pct) />
+            </div>
+            <div class="token-meter-legend">
+                <span><i class="swatch--input" />"In " {format_num(input)}</span>
+                <span><i class="swatch--output" />"Out " {format_num(output)}</span>
+                <span><i class="swatch--cache" />"Cache " {format_num(cache)}</span>
+            </div>
+        </div>
     }
 }
 

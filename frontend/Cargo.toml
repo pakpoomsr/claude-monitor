@@ -23,6 +23,8 @@ features = [
     "HtmlElement",
     "Event",
     "CustomEvent",
+    "Storage",
+    "MediaQueryList",
 ]
 
 [[bin]]
