@@ -90,9 +90,9 @@ impl Database {
                 session.id,
                 session.project_path,
                 session.model,
-                session.input_tokens,
-                session.output_tokens,
-                session.cache_tokens,
+                session.input_tokens as i64,
+                session.output_tokens as i64,
+                session.cache_tokens as i64,
                 session.cost_usd,
                 session.started_at,
                 session.updated_at,
@@ -122,10 +122,10 @@ impl Database {
 
         stmt.query_row(params![today], |row| {
             Ok(DailySummary {
-                total_input_tokens: row.get(0)?,
-                total_output_tokens: row.get(1)?,
+                total_input_tokens: row.get::<_, i64>(0)? as u64,
+                total_output_tokens: row.get::<_, i64>(1)? as u64,
                 total_cost_usd: row.get(2)?,
-                session_count: row.get(3)?,
+                session_count: row.get::<_, i64>(3)? as u64,
                 top_model: row.get(4)?,
             })
         })
@@ -145,9 +145,9 @@ impl Database {
                 id: row.get(0)?,
                 project_path: row.get(1)?,
                 model: row.get(2)?,
-                input_tokens: row.get(3)?,
-                output_tokens: row.get(4)?,
-                cache_tokens: row.get(5)?,
+                input_tokens: row.get::<_, i64>(3)? as u64,
+                output_tokens: row.get::<_, i64>(4)? as u64,
+                cache_tokens: row.get::<_, i64>(5)? as u64,
                 cost_usd: row.get(6)?,
                 started_at: row.get(7)?,
                 updated_at: row.get(8)?,
@@ -173,8 +173,8 @@ impl Database {
         let rows = stmt.query_map([], |row| {
             Ok(DayStats {
                 date: row.get(0)?,
-                input_tokens: row.get(1)?,
-                output_tokens: row.get(2)?,
+                input_tokens: row.get::<_, i64>(1)? as u64,
+                output_tokens: row.get::<_, i64>(2)? as u64,
                 cost_usd: row.get(3)?,
             })
         })?;

@@ -1,11 +1,15 @@
 [workspace]
 members = ["src-tauri", "frontend"]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
+authors = ["Pakpoom S. <pakpoomtcm@gmail.com>"]
+repository = "https://github.com/pakpoomsr/claude-monitor"
+homepage = "https://github.com/pakpoomsr/claude-monitor"
+description = "Desktop dashboard that watches Claude Code agents in real time."
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

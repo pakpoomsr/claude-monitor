@@ -6,7 +6,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use rand::RngCore;
+use rand::TryRngCore;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
@@ -100,6 +100,6 @@ fn emit_status(app: &AppHandle, snap: &AgentSnapshot) {
 
 fn random_token() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    let _ = rand::rngs::OsRng.try_fill_bytes(&mut bytes);
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

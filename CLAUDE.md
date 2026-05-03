@@ -4,7 +4,7 @@ This file orients you when working on this codebase. Read it before making non-t
 
 ## What this app is
 
-A desktop dashboard (Tauri 2 native shell + Leptos 0.7 WASM frontend, **pure Rust** — no JS framework) that watches Claude Code agents in real time and shows their status (Working / Waiting / Idle / Error). It correlates two signal sources:
+A desktop dashboard (Tauri 2 native shell + Leptos 0.8 WASM frontend, **pure Rust** — no JS framework) that watches Claude Code agents in real time and shows their status (Working / Waiting / Idle / Error). It correlates two signal sources:
 
 1. **Real-time hooks** (authoritative) — embedded `axum` HTTP server receives `PreToolUse` / `Stop` / `Notification` etc. POSTs from Claude Code itself. Opt-in by clicking "Set up hooks" in Settings.
 2. **JSONL file watcher** (fallback) — tails `~/.claude/projects/**/*.jsonl` and infers status from event timing.
@@ -26,7 +26,7 @@ cd frontend  && trunk build         # frontend WASM only
 After a backend change, smoke-test with `timeout 25 cargo tauri dev --no-watch` from the project root — exit 143 (SIGTERM from timeout) is expected and fine; you're looking for these three lines to confirm subsystems started:
 
 ```
-[claude-monitor] Watching: C:\Users\zicre\.claude\projects
+[claude-monitor] Watching: C:\Users\<you>\.claude\projects
 [claude-monitor] hook server listening on http://127.0.0.1:<port>/h
 [claude-monitor] auto-registered hooks at http://127.0.0.1:<port>/h
 ```
@@ -103,7 +103,7 @@ The 1Hz `tick()` only mutates `pending_tools[].flagged_permission` and `snapshot
 - `tauri::generate_handler![...]` must list every command. Forgetting causes silent runtime failures.
 - Tauri serializes command params with `rename_all = "camelCase"` by default. If you add a command like `get_thing(session_id: String)`, the frontend must invoke with `{ sessionId: "..." }`.
 
-### Leptos 0.7 quirks
+### Leptos 0.8 quirks
 
 - Use `signal()` (function), not `create_signal`.
 - `mount_to_body` is at `leptos::mount::mount_to_body`.
