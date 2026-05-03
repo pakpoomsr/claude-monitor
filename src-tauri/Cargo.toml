@@ -1,0 +1,32 @@
+[package]
+name = "claude-monitor"
+version = { workspace = true }
+edition = { workspace = true }
+description = "Real-time pixel-agent monitor for Claude Code sessions"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-notification = "2"
+tauri-plugin-store = "2"
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
+tokio = { version = "1", features = ["full"] }
+notify = "6"
+rusqlite = { version = "0.31", features = ["bundled"] }
+dirs = "5"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+anyhow = "1"
+parking_lot = "0.12"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[[bin]]
+name = "claude-monitor"
+path = "src/main.rs"

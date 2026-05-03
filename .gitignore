@@ -1,0 +1,7 @@
+target/
+**/dist/
+src-tauri/gen/
+src-tauri/icons/*.png
+src-tauri/icons/*.ico
+Cargo.lock
+.DS_Store
