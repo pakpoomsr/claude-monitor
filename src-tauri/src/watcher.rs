@@ -135,7 +135,7 @@ async fn process_file_update(
         all_events.extend(parse_jsonl_line(&line));
     }
 
-    state.offset = file.seek(SeekFrom::Current(0)).unwrap_or(state.offset);
+    state.offset = file.stream_position().unwrap_or(state.offset);
 
     if all_events.is_empty() {
         return;

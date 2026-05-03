@@ -53,10 +53,10 @@ where
 
     let closure = Closure::wrap(Box::new(move |raw: JsValue| {
         // Tauri wraps the payload as { event, id, payload }
-        if let Ok(payload) = Reflect::get(&raw, &JsValue::from_str("payload")) {
-            if let Ok(decoded) = from_value::<T>(payload) {
-                handler(decoded);
-            }
+        if let Ok(payload) = Reflect::get(&raw, &JsValue::from_str("payload"))
+            && let Ok(decoded) = from_value::<T>(payload)
+        {
+            handler(decoded);
         }
     }) as Box<dyn FnMut(JsValue)>);
 
@@ -68,13 +68,13 @@ fn js_err(v: &JsValue) -> String {
     if let Some(s) = v.as_string() {
         return s;
     }
-    if let Ok(msg) = Reflect::get(v, &JsValue::from_str("message")) {
-        if let Some(s) = msg.as_string() {
-            return s;
-        }
+    if let Ok(msg) = Reflect::get(v, &JsValue::from_str("message"))
+        && let Some(s) = msg.as_string()
+    {
+        return s;
     }
     js_sys::JSON::stringify(v)
-        .map(|s| String::from(s))
+        .map(String::from)
         .unwrap_or_else(|_| "unknown error".into())
 }
 

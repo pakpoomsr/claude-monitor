@@ -107,6 +107,12 @@ pub struct AgentRegistry {
     settings: RwLock<AgentSettings>,
 }
 
+impl Default for AgentRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AgentRegistry {
     pub fn new() -> Self {
         Self {
@@ -313,10 +319,10 @@ impl AgentRegistry {
         });
 
         // Update project lazily if we hadn't seen it yet.
-        if agent.snapshot.project.is_empty() {
-            if let Some(cwd) = &ev.cwd {
-                agent.snapshot.project = cwd.clone();
-            }
+        if agent.snapshot.project.is_empty()
+            && let Some(cwd) = &ev.cwd
+        {
+            agent.snapshot.project = cwd.clone();
         }
         if agent.snapshot.parent_id.is_none() {
             agent.snapshot.parent_id = parent_id;
@@ -503,10 +509,11 @@ fn compute_status(agent: &AgentInner, settings: &AgentSettings, now: DateTime<Ut
     // Text-only turn that's been quiet for `text_idle_secs` → turn ended,
     // waiting on user's next message. (Backup signal in case turn_duration
     // wasn't emitted.)
-    if let Some(deadline) = agent.text_idle_deadline {
-        if now >= deadline && !agent.had_tool_in_turn {
-            return AgentStatus::Waiting;
-        }
+    if let Some(deadline) = agent.text_idle_deadline
+        && now >= deadline
+        && !agent.had_tool_in_turn
+    {
+        return AgentStatus::Waiting;
     }
 
     AgentStatus::Working

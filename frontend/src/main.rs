@@ -28,18 +28,14 @@ fn main() {
 /// Read the saved theme (if any) from localStorage and apply it before mount,
 /// so the UI doesn't flash the wrong palette.
 fn init_theme_from_storage() {
-    if let Some(window) = web_sys::window() {
-        if let Ok(Some(storage)) = window.local_storage() {
-            if let Ok(Some(theme)) = storage.get_item("cm-theme") {
-                if theme == "light" || theme == "dark" {
-                    if let Some(doc) = window.document() {
-                        if let Some(el) = doc.document_element() {
-                            let _ = el.set_attribute("data-theme", &theme);
-                        }
-                    }
-                }
-            }
-        }
+    if let Some(window) = web_sys::window()
+        && let Ok(Some(storage)) = window.local_storage()
+        && let Ok(Some(theme)) = storage.get_item("cm-theme")
+        && (theme == "light" || theme == "dark")
+        && let Some(doc) = window.document()
+        && let Some(el) = doc.document_element()
+    {
+        let _ = el.set_attribute("data-theme", &theme);
     }
 }
 
@@ -60,10 +56,10 @@ fn current_theme() -> String {
 
 fn set_theme(theme: &str) {
     if let Some(window) = web_sys::window() {
-        if let Some(doc) = window.document() {
-            if let Some(el) = doc.document_element() {
-                let _ = el.set_attribute("data-theme", theme);
-            }
+        if let Some(doc) = window.document()
+            && let Some(el) = doc.document_element()
+        {
+            let _ = el.set_attribute("data-theme", theme);
         }
         if let Ok(Some(storage)) = window.local_storage() {
             let _ = storage.set_item("cm-theme", theme);

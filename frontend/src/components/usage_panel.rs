@@ -74,7 +74,7 @@ fn BarChart(data: Vec<DayStats>) -> impl IntoView {
         .into_iter()
         .map(|d| {
             let h_pct = ((d.cost_usd / max_cost) * 100.0).clamp(2.0, 100.0);
-            let label = d.date.split('-').last().unwrap_or(&d.date).to_string();
+            let label = d.date.split('-').next_back().unwrap_or(&d.date).to_string();
             let cost = format!("${:.2}", d.cost_usd);
             view! {
                 <div class="bar-col" title=cost.clone()>

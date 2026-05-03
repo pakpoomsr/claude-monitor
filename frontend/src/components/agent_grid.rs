@@ -111,7 +111,7 @@ fn AgentTile(
                 </div>
                 <div class="tile-status">
                     {match tool {
-                        Some(t) => format!("{t}"),
+                        Some(t) => t.to_string(),
                         None => status_label.to_string(),
                     }}
                 </div>

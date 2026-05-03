@@ -52,12 +52,12 @@ pub fn is_registered(url: &str) -> bool {
     for arr in hooks.values() {
         let Some(arr) = arr.as_array() else { continue };
         for entry in arr {
-            if entry.get(TAG_KEY) == Some(&Value::Bool(true)) {
-                if let Some(inner) = entry.get("hooks").and_then(|h| h.as_array()) {
-                    for h in inner {
-                        if h.get("url").and_then(|u| u.as_str()) == Some(url) {
-                            return true;
-                        }
+            if entry.get(TAG_KEY) == Some(&Value::Bool(true))
+                && let Some(inner) = entry.get("hooks").and_then(|h| h.as_array())
+            {
+                for h in inner {
+                    if h.get("url").and_then(|u| u.as_str()) == Some(url) {
+                        return true;
                     }
                 }
             }

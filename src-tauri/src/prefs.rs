@@ -37,11 +37,11 @@ pub fn save(p: &Prefs) {
         eprintln!("[claude-monitor] prefs: no data_local_dir, skipping save");
         return;
     };
-    if let Some(parent) = path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
-            eprintln!("[claude-monitor] prefs: mkdir failed: {e}");
-            return;
-        }
+    if let Some(parent) = path.parent()
+        && let Err(e) = fs::create_dir_all(parent)
+    {
+        eprintln!("[claude-monitor] prefs: mkdir failed: {e}");
+        return;
     }
     match serde_json::to_string_pretty(p) {
         Ok(body) => {
