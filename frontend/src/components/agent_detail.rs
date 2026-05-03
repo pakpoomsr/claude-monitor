@@ -47,7 +47,7 @@ pub fn AgentDetail(
                             </header>
 
                             <section class="detail-section">
-                                <h3>"Current message"</h3>
+                                <h3>"Recent message"</h3>
                                 <pre class="message">{
                                     if s.current_message.is_empty() {
                                         "(no message yet)".to_string()

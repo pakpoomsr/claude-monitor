@@ -259,19 +259,15 @@ pub fn short_id(id: &str) -> String {
     id[..n].to_string()
 }
 
-const AVATARS: [&str; 12] = [
-    "byte_owl",
-    "circuit_cat",
-    "amber_bot",
-    "gray_golem",
-    "red_imp",
-    "mint_mite",
-    "violet_node",
-    "teal_turtle",
-    "gold_bug",
-    "blue_stack",
-    "rose_sprite",
-    "mono_fallback",
+const AVATARS: [&str; 8] = [
+    "01_monitor_bot",
+    "02_teardrop_bot",
+    "03_turtle_bot",
+    "04_round_bot",
+    "05_cat_bot",
+    "06_fox_bot",
+    "07_red_probe_bot",
+    "08_owl_bot",
 ];
 
 /// Pick a sprite name deterministically from the agent id (FNV-1a 32-bit) so
