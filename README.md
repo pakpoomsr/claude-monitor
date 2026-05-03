@@ -6,6 +6,10 @@
 **Pure Rust** — Tauri 2 backend + Leptos 0.8 (CSR) WASM frontend, Rust 2024 edition.
 No JavaScript framework. Light + dark themes. ~10 MB binary.
 
+## Demo
+
+![App demo](./assets/demo.gif)
+
 ---
 
 ## ⚡ Quick start
