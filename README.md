@@ -166,6 +166,21 @@ Edit `src-tauri/src/agents.rs::estimate_cost` to adjust.
 - `beforeDevCommand` must run from `frontend/`, hence the `cd frontend &&` prefix — Tauri runs the command from the project root by default.
 - Hook entries are tagged `_claude_monitor: true`. If you edit `~/.claude/settings.json` manually, leave that key alone or unregister via the app first.
 
+## Sponsor
+
+Claude Monitor is free and MIT-licensed. If it saves you time watching your
+agents, consider sponsoring continued work — it directly funds new features
+on the roadmap below (per-project rollup, native rate-limit alerts, CSV
+export, sprite skins).
+
+- **GitHub Sponsors** — https://github.com/sponsors/pakpoomsr
+- **Buy Me a Coffee** — https://buymeacoffee.com/pakpoomsr
+- **Issues / feedback** — https://github.com/pakpoomsr/claude-monitor/issues
+
+If you're using this in a team or company context and would like priority
+features (team rollup, cloud sync, integrations), open a discussion — happy
+to talk.
+
 ## Roadmap
 
 - [ ] Pin hook server to a fixed port so registrations survive restarts
