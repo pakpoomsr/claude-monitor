@@ -22,7 +22,12 @@ pub enum ClaudeEvent {
     ToolUseEnd {
         id: String,
     },
+    /// User typed something (real input, not a tool_result).
     UserMessage,
+    /// `system` record with `subtype: "turn_duration"` — Claude Code's
+    /// authoritative end-of-turn marker. Pixel-agents calls this the
+    /// definitive Working→Waiting flip.
+    TurnEnd,
     Unknown,
 }
 
@@ -35,18 +40,31 @@ pub fn parse_jsonl_line(line: &str) -> Vec<ClaudeEvent> {
     };
 
     let mut out = Vec::new();
+
+    // Project path (`cwd`) appears at the top level of nearly every record
+    // type in Claude Code's JSONL — emit a SessionStart whenever we see one.
+    // apply_events dedupes by ignoring empty project updates after the first.
+    let cwd = val
+        .get("cwd")
+        .or_else(|| val.get("project_path"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let session_id_top = string_field(&val, "sessionId");
+    if !cwd.is_empty() || !session_id_top.is_empty() {
+        out.push(ClaudeEvent::SessionStart {
+            session_id: session_id_top,
+            project: cwd.to_string(),
+        });
+    }
+
     let event_type = val.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
     match event_type {
         "system" => {
-            let session_id = string_field(&val, "session_id");
-            let project = val
-                .get("cwd")
-                .or_else(|| val.get("project_path"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            out.push(ClaudeEvent::SessionStart { session_id, project });
+            let subtype = val.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
+            if subtype == "turn_duration" {
+                out.push(ClaudeEvent::TurnEnd);
+            }
         }
 
         "assistant" => {

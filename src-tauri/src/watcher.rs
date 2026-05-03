@@ -88,6 +88,18 @@ async fn scan_existing_files(
     }
 }
 
+/// Sub-agent JSONL files live at:
+///   `<projects>/<project>/<parent_session_uuid>/subagents/agent-<sub_id>.jsonl`
+/// Root sessions live at:
+///   `<projects>/<project>/<session_uuid>.jsonl`
+fn detect_parent_id(path: &Path) -> Option<String> {
+    let parent_dir = path.parent()?;
+    if parent_dir.file_name()?.to_str()? != "subagents" {
+        return None;
+    }
+    parent_dir.parent()?.file_name()?.to_str().map(String::from)
+}
+
 async fn process_file_update(
     path: &Path,
     states: &mut HashMap<PathBuf, FileState>,
@@ -100,6 +112,8 @@ async fn process_file_update(
         .and_then(|s| s.to_str())
         .unwrap_or("unknown")
         .to_string();
+
+    let parent_id = detect_parent_id(path);
 
     let Ok(mut file) = File::open(path) else { return };
 
@@ -137,7 +151,7 @@ async fn process_file_update(
         .map(DateTime::<Utc>::from)
         .unwrap_or_else(|_| Utc::now());
 
-    if let Some(snap) = registry.apply_events(&session_id, &all_events, activity_at) {
+    if let Some(snap) = registry.apply_events(&session_id, &all_events, activity_at, parent_id.clone()) {
         if snap.input_tokens > 0 || snap.output_tokens > 0 {
             let session = Session {
                 id: snap.session_id.clone(),

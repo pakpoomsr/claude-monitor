@@ -65,8 +65,28 @@ pub fn SettingsPanel() -> impl IntoView {
                         }
                     />
                     <small class="muted">
-                        "If a tool_use has no tool_result after this many seconds, \
-                         the agent is flagged as needing permission."
+                        "If a tool has no result after this many seconds, treat as Waiting \
+                         (Claude is likely blocked on a permission prompt)."
+                    </small>
+                </label>
+
+                <label class="form-field">
+                    <span>"Text idle delay (seconds)"</span>
+                    <input
+                        type="number"
+                        min="1"
+                        max="60"
+                        prop:value=move || settings.get().text_idle_secs.to_string()
+                        on:input=move |ev| {
+                            if let Ok(v) = event_target_value(&ev).parse::<u64>() {
+                                set_settings.update(|s| s.text_idle_secs = v);
+                            }
+                        }
+                    />
+                    <small class="muted">
+                        "On a text-only turn (no tool used), wait this many seconds after \
+                         the last assistant text before flipping to Waiting. \
+                         Backup signal when turn_duration markers are missing."
                     </small>
                 </label>
 

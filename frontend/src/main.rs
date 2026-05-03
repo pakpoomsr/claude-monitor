@@ -9,12 +9,11 @@ use components::{
     settings::SettingsPanel, usage_panel::UsagePanel,
 };
 use tauri_bridge::{invoke_no_args, listen};
-use types::{AgentSnapshot, AgentStatus};
+use types::{apply_filter, build_groups, AgentGroup, AgentSnapshot, AgentStatus, Filter};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Agents,
-    History,
     Usage,
     Api,
     Settings,
@@ -31,15 +30,14 @@ fn App() -> impl IntoView {
     let (selected, set_selected) = signal::<Option<String>>(None);
     let (tab, set_tab) = signal(Tab::Agents);
     let (toast, set_toast) = signal::<Option<String>>(None);
+    let (filter, set_filter) = signal(Filter::Active);
 
-    // Initial load
     leptos::task::spawn_local(async move {
         if let Ok(list) = invoke_no_args::<Vec<AgentSnapshot>>("list_agents").await {
             set_agents.set(list);
         }
     });
 
-    // Live updates
     listen::<AgentSnapshot, _>("agent-status", move |snap| {
         set_agents.update(|list| {
             if let Some(existing) = list.iter_mut().find(|a| a.session_id == snap.session_id) {
@@ -63,39 +61,40 @@ fn App() -> impl IntoView {
         });
     });
 
-    let working_count = move || {
-        agents.with(|a| a.iter().filter(|s| s.status == AgentStatus::Working).count())
-    };
-    let waiting_count = move || {
-        agents.with(|a| a.iter().filter(|s| s.status == AgentStatus::Waiting).count())
-    };
-    let idle_count = move || {
-        agents.with(|a| a.iter().filter(|s| s.status == AgentStatus::Idle).count())
-    };
-    let active_count = move || working_count() + waiting_count();
+    let groups = Signal::derive(move || agents.with(|list| build_groups(list)));
 
-    let active_agents = Signal::derive(move || {
-        let mut list: Vec<AgentSnapshot> = agents.with(|a| {
-            a.iter().filter(|s| s.status.is_active()).cloned().collect()
-        });
-        list.sort_by(|a, b| {
-            let prio = |s: &AgentSnapshot| match s.status {
-                AgentStatus::Waiting => 0,
-                AgentStatus::Error => 1,
-                AgentStatus::Working => 2,
-                AgentStatus::Idle => 3,
-            };
-            prio(a).cmp(&prio(b)).then_with(|| b.last_activity.cmp(&a.last_activity))
-        });
-        list
+    // Group-level counts (matches what the user sees in tiles).
+    let working_groups = Signal::derive(move || {
+        groups.with(|gs| gs.iter().filter(|g| g.aggregate_status() == AgentStatus::Working).count())
+    });
+    let waiting_groups = Signal::derive(move || {
+        groups.with(|gs| gs.iter().filter(|g| g.aggregate_status() == AgentStatus::Waiting).count())
+    });
+    let idle_groups = Signal::derive(move || {
+        groups.with(|gs| gs.iter().filter(|g| g.aggregate_status() == AgentStatus::Idle).count())
     });
 
-    let history_agents = Signal::derive(move || {
-        let mut list: Vec<AgentSnapshot> = agents.with(|a| {
-            a.iter().filter(|s| !s.status.is_active()).cloned().collect()
-        });
-        list.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
-        list
+    // Apply the user's filter to the groups (also drops non-matching subs
+    // inside each group). Then split into Active / Idle sections — when the
+    // user filtered to one of those, the other section just renders empty
+    // and gets hidden by AgentGrid's empty-message fallback.
+    let filtered_groups = Signal::derive(move || apply_filter(groups.get(), filter.get()));
+
+    let active_groups = Signal::derive(move || {
+        filtered_groups.with(|gs| {
+            gs.iter()
+                .filter(|g| g.aggregate_status() != AgentStatus::Idle)
+                .cloned()
+                .collect::<Vec<AgentGroup>>()
+        })
+    });
+    let idle_groups_list = Signal::derive(move || {
+        filtered_groups.with(|gs| {
+            gs.iter()
+                .filter(|g| g.aggregate_status() == AgentStatus::Idle)
+                .cloned()
+                .collect::<Vec<AgentGroup>>()
+        })
     });
 
     view! {
@@ -105,55 +104,54 @@ fn App() -> impl IntoView {
                 <div class="stats">
                     <span class="stat">
                         <span class="dot working"></span>
-                        {move || format!("{} working", working_count())}
+                        {move || format!("{} working", working_groups.get())}
                     </span>
-                    <span class="stat alert" class:hidden=move || waiting_count() == 0>
+                    <span class="stat alert" class:hidden=move || waiting_groups.get() == 0>
                         <span class="dot waiting"></span>
-                        {move || format!("{} waiting", waiting_count())}
+                        {move || format!("{} waiting", waiting_groups.get())}
                     </span>
                     <span class="stat muted">
-                        {move || format!("{} ended", idle_count())}
+                        {move || format!("{} idle", idle_groups.get())}
                     </span>
                 </div>
             </header>
 
             <nav class="tabs">
-                <TabButton
-                    tab=Tab::Agents current=tab set_tab
-                    label="Agents"
-                    badge=Signal::derive(move || active_count())
-                />
-                <TabButton
-                    tab=Tab::History current=tab set_tab
-                    label="History"
-                    badge=Signal::derive(move || idle_count())
-                />
-                <TabButton tab=Tab::Usage    current=tab set_tab label="Usage"    badge=Signal::derive(|| 0) />
-                <TabButton tab=Tab::Api      current=tab set_tab label="API"      badge=Signal::derive(|| 0) />
-                <TabButton tab=Tab::Settings current=tab set_tab label="Settings" badge=Signal::derive(|| 0) />
+                <TabButton tab=Tab::Agents   current=tab set_tab label="Agents" />
+                <TabButton tab=Tab::Usage    current=tab set_tab label="Usage" />
+                <TabButton tab=Tab::Api      current=tab set_tab label="API" />
+                <TabButton tab=Tab::Settings current=tab set_tab label="Settings" />
             </nav>
 
             <main class="main">
                 {move || match tab.get() {
                     Tab::Agents => view! {
                         <div class="agents-layout" class:has-detail=move || selected.get().is_some()>
-                            <AgentGrid
-                                agents=active_agents
-                                set_selected
-                                empty_message="No active agents. Start a Claude Code session and it will appear here."
-                            />
-                            {move || selected.get().is_some().then(|| view! {
-                                <AgentDetail agents selected set_selected />
-                            })}
-                        </div>
-                    }.into_any(),
-                    Tab::History => view! {
-                        <div class="agents-layout" class:has-detail=move || selected.get().is_some()>
-                            <AgentGrid
-                                agents=history_agents
-                                set_selected
-                                empty_message="No ended sessions yet."
-                            />
+                            <div class="agent-sections">
+                                <FilterBar filter set_filter
+                                    working_count=working_groups
+                                    waiting_count=waiting_groups
+                                    idle_count=idle_groups
+                                />
+                                <AgentGrid
+                                    groups=active_groups
+                                    set_selected
+                                    section_label="Active"
+                                    empty_message=Signal::derive(move || match filter.get() {
+                                        Filter::Idle => String::new(),
+                                        _ => "No active agents.".into(),
+                                    })
+                                />
+                                <AgentGrid
+                                    groups=idle_groups_list
+                                    set_selected
+                                    section_label="Idle"
+                                    empty_message=Signal::derive(move || match filter.get() {
+                                        Filter::Idle => "No idle agents.".into(),
+                                        _ => String::new(),
+                                    })
+                                />
+                            </div>
                             {move || selected.get().is_some().then(|| view! {
                                 <AgentDetail agents selected set_selected />
                             })}
@@ -173,12 +171,45 @@ fn App() -> impl IntoView {
 }
 
 #[component]
+fn FilterBar(
+    filter: ReadSignal<Filter>,
+    set_filter: WriteSignal<Filter>,
+    working_count: Signal<usize>,
+    waiting_count: Signal<usize>,
+    idle_count: Signal<usize>,
+) -> impl IntoView {
+    let pill = move |f: Filter, label: &'static str, count: Signal<usize>| {
+        let is_active = move || filter.get() == f;
+        view! {
+            <button
+                class="filter-pill"
+                class:active=is_active
+                on:click=move |_| set_filter.set(f)
+            >
+                <span>{label}</span>
+                <span class="filter-count">{move || count.get()}</span>
+            </button>
+        }
+    };
+
+    let total = Signal::derive(move || working_count.get() + waiting_count.get() + idle_count.get());
+    let active = Signal::derive(move || working_count.get() + waiting_count.get());
+
+    view! {
+        <div class="filter-bar">
+            {pill(Filter::All,    "All",    total)}
+            {pill(Filter::Active, "Active", active)}
+            {pill(Filter::Idle,   "Idle",   idle_count)}
+        </div>
+    }
+}
+
+#[component]
 fn TabButton(
     tab: Tab,
     current: ReadSignal<Tab>,
     set_tab: WriteSignal<Tab>,
     label: &'static str,
-    badge: Signal<usize>,
 ) -> impl IntoView {
     let is_active = move || current.get() == tab;
     view! {
@@ -188,15 +219,10 @@ fn TabButton(
             on:click=move |_| set_tab.set(tab)
         >
             {label}
-            {move || {
-                let n = badge.get();
-                (n > 0).then(|| view! { <span class="tab-badge">{n}</span> })
-            }}
         </button>
     }
 }
 
-/// Tiny sleep helper that doesn't pull in the gloo crate.
 async fn gloo_sleep(ms: i32) {
     use wasm_bindgen_futures::JsFuture;
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
