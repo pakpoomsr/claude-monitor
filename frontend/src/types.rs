@@ -21,7 +21,7 @@ impl AgentStatus {
 
     pub fn label(&self) -> &'static str {
         match self {
-            AgentStatus::Idle => "Ended",
+            AgentStatus::Idle => "Idle",
             AgentStatus::Working => "Working",
             AgentStatus::Waiting => "Waiting",
             AgentStatus::Error => "Error",
