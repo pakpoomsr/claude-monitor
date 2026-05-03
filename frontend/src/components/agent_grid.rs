@@ -4,42 +4,26 @@ use crate::types::{project_label, short_id, AgentSnapshot};
 
 #[component]
 pub fn AgentGrid(
-    agents: ReadSignal<Vec<AgentSnapshot>>,
+    agents: Signal<Vec<AgentSnapshot>>,
     set_selected: WriteSignal<Option<String>>,
+    #[prop(into)] empty_message: String,
 ) -> impl IntoView {
-    let sorted = move || {
-        let mut list = agents.get();
-        // Sort: needs-permission first, then working, then idle, by recency
-        list.sort_by(|a, b| {
-            use crate::types::AgentStatus::*;
-            let prio = |s: &AgentSnapshot| match s.status {
-                NeedsPermission => 0,
-                Error => 1,
-                Working => 2,
-                Idle => 3,
-            };
-            prio(a)
-                .cmp(&prio(b))
-                .then_with(|| b.last_activity.cmp(&a.last_activity))
-        });
-        list
-    };
+    let empty_msg = StoredValue::new(empty_message);
 
     view! {
         <section class="agent-grid">
             <Show
                 when=move || !agents.with(|a| a.is_empty())
-                fallback=|| view! {
+                fallback=move || view! {
                     <div class="empty">
                         <div class="empty-sprite"></div>
-                        <p>"Watching ~/.claude/projects — no agents yet."</p>
-                        <p class="muted">"Start a Claude Code session to see it here."</p>
+                        <p class="muted">{empty_msg.get_value()}</p>
                     </div>
                 }
             >
                 <div class="grid">
                     <For
-                        each=sorted
+                        each=move || agents.get()
                         key=|a| a.session_id.clone()
                         children=move |snap: AgentSnapshot| {
                             let id = snap.session_id.clone();
@@ -71,7 +55,7 @@ pub fn AgentGrid(
                                         </div>
                                         <div class="tile-status">
                                             {match tool {
-                                                Some(t) => format!("⚙ {t}"),
+                                                Some(t) => format!("{t}"),
                                                 None => status_label.to_string(),
                                             }}
                                         </div>

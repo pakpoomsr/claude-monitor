@@ -1,10 +1,11 @@
 use crate::agents::AgentRegistry;
 use crate::db::{Database, Session};
 use crate::parser::parse_jsonl_line;
+use chrono::{DateTime, Utc};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
@@ -126,7 +127,17 @@ async fn process_file_update(
         return;
     }
 
-    if let Some(snap) = registry.apply_events(&session_id, &all_events) {
+    // Use the file's mtime as the activity timestamp. For an initial scan of
+    // an old JSONL file this is the time the session actually ended; for
+    // live updates from the watcher it's effectively "now". Either way it
+    // prevents ancient sessions from looking fresh on startup.
+    let activity_at: DateTime<Utc> = file
+        .metadata()
+        .and_then(|m| m.modified())
+        .map(DateTime::<Utc>::from)
+        .unwrap_or_else(|_| Utc::now());
+
+    if let Some(snap) = registry.apply_events(&session_id, &all_events, activity_at) {
         if snap.input_tokens > 0 || snap.output_tokens > 0 {
             let session = Session {
                 id: snap.session_id.clone(),

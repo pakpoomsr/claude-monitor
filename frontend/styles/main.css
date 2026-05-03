@@ -10,7 +10,7 @@
 
     --working: #4ade80;
     --idle: #6b7280;
-    --permission: #fbbf24;
+    --waiting: #fbbf24;
     --error: #f87171;
 
     --shadow: 0 2px 0 #000, 0 4px 12px rgba(0, 0, 0, 0.4);
@@ -67,26 +67,27 @@ input:focus { outline: 1px solid var(--accent); }
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 14px 20px;
+    padding: 8px 16px;
     border-bottom: 1px solid var(--line);
     background: linear-gradient(180deg, var(--panel) 0%, var(--bg) 100%);
 }
 
 .logo {
-    font-size: 16px;
-    letter-spacing: 4px;
+    font-size: 13px;
+    letter-spacing: 3px;
     color: var(--accent);
-    text-shadow: 2px 2px 0 #000;
+    text-shadow: 1px 1px 0 #000;
 }
 
 .stats {
     display: flex;
-    gap: 18px;
+    gap: 14px;
     align-items: center;
+    font-size: 12px;
 }
 
 .stat { display: inline-flex; align-items: center; gap: 6px; }
-.stat.alert { color: var(--permission); font-weight: bold; }
+.stat.alert { color: var(--waiting); font-weight: bold; }
 
 .dot {
     width: 8px;
@@ -94,61 +95,77 @@ input:focus { outline: 1px solid var(--accent); }
     display: inline-block;
     image-rendering: pixelated;
 }
-.dot.working    { background: var(--working);    box-shadow: 0 0 6px var(--working); }
-.dot.idle       { background: var(--idle); }
-.dot.permission { background: var(--permission); box-shadow: 0 0 6px var(--permission); animation: blink 1s steps(2) infinite; }
-.dot.error      { background: var(--error); }
+.dot.working { background: var(--working); box-shadow: 0 0 6px var(--working); }
+.dot.idle    { background: var(--idle); }
+.dot.waiting { background: var(--waiting); box-shadow: 0 0 6px var(--waiting); animation: blink 1s steps(2) infinite; }
+.dot.error   { background: var(--error); }
 
 @keyframes blink { 50% { opacity: 0.3; } }
 
 .tabs {
     display: flex;
-    gap: 2px;
-    padding: 0 16px;
+    gap: 0;
+    padding: 0 12px;
     border-bottom: 1px solid var(--line);
     background: var(--panel);
 }
 
 .tab-button {
-    padding: 10px 18px;
+    padding: 8px 14px;
     color: var(--muted);
     border-bottom: 2px solid transparent;
     text-transform: uppercase;
     letter-spacing: 1px;
-    font-size: 12px;
+    font-size: 11px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
 }
 .tab-button:hover { color: var(--text); }
 .tab-button.active { color: var(--accent); border-bottom-color: var(--accent); }
 
-.main { overflow: auto; }
+.tab-badge {
+    background: var(--line);
+    color: var(--text);
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-size: 10px;
+    min-width: 18px;
+    text-align: center;
+}
+.tab-button.active .tab-badge { background: var(--accent); color: #000; }
+
+.main { overflow: auto; min-height: 0; }
 
 /* ---------- agents page ---------- */
 .agents-layout {
     display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+    padding: 12px;
+    align-content: start; /* keep content at top, no vertical centering */
+}
+.agents-layout.has-detail {
     grid-template-columns: 1fr 360px;
-    gap: 16px;
-    padding: 16px;
-    height: 100%;
 }
 
 .agent-grid {
-    overflow-y: auto;
+    min-width: 0;
 }
 
 .empty {
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
-    padding: 80px 20px;
+    padding: 40px 20px;
     text-align: center;
     color: var(--muted);
-    gap: 12px;
+    gap: 10px;
 }
 
 .empty-sprite {
-    width: 64px;
-    height: 64px;
+    width: 48px;
+    height: 48px;
     background: repeating-linear-gradient(
         45deg, var(--line), var(--line) 4px, var(--panel) 4px, var(--panel) 8px
     );
@@ -157,15 +174,15 @@ input:focus { outline: 1px solid var(--accent); }
 
 .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 8px;
 }
 
 .tile {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 10px;
+    gap: 10px;
+    padding: 8px;
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 2px;
@@ -176,19 +193,19 @@ input:focus { outline: 1px solid var(--accent); }
 
 .tile:hover { transform: translateY(-1px); border-color: var(--accent); }
 
-.tile--working    { border-left: 4px solid var(--working); }
-.tile--idle       { border-left: 4px solid var(--idle); opacity: 0.85; }
-.tile--permission { border-left: 4px solid var(--permission); animation: pulse 1.4s ease-in-out infinite; }
-.tile--error      { border-left: 4px solid var(--error); }
+.tile--working { border-left: 4px solid var(--working); }
+.tile--idle    { border-left: 4px solid var(--idle); opacity: 0.75; }
+.tile--waiting { border-left: 4px solid var(--waiting); animation: pulse 1.4s ease-in-out infinite; }
+.tile--error   { border-left: 4px solid var(--error); }
 
 @keyframes pulse {
     0%, 100% { box-shadow: var(--shadow); }
-    50% { box-shadow: 0 2px 0 #000, 0 0 16px var(--permission); }
+    50% { box-shadow: 0 2px 0 #000, 0 0 16px var(--waiting); }
 }
 
 .sprite-frame {
-    width: 48px;
-    height: 48px;
+    width: 40px;
+    height: 40px;
     flex-shrink: 0;
     background: var(--panel-2);
     border: 1px solid var(--line);
@@ -209,12 +226,13 @@ input:focus { outline: 1px solid var(--accent); }
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 140px;
+    max-width: 120px;
+    font-size: 12px;
 }
-.tile-cost { color: var(--accent); font-size: 11px; }
+.tile-cost { color: var(--accent); font-size: 10px; }
 .tile-status {
-    margin-top: 4px;
-    font-size: 11px;
+    margin-top: 2px;
+    font-size: 10px;
     color: var(--muted);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -223,12 +241,11 @@ input:focus { outline: 1px solid var(--accent); }
 
 /* ---------- pixel sprite (CSS-only 8x8 robot) ---------- */
 .sprite {
-    --p: 4px; /* pixel size */
+    --p: 3px;
     --c: var(--working);
     width: calc(var(--p) * 8);
     height: calc(var(--p) * 8);
     image-rendering: pixelated;
-    /* 8x8 grid drawn with box-shadows on a single 1px element */
     background: transparent;
     position: relative;
 }
@@ -239,58 +256,52 @@ input:focus { outline: 1px solid var(--accent); }
     height: var(--p);
     background: var(--c);
     box-shadow:
-        /* row 0 (top, antennae) */
         calc(var(--p) * 2) 0                       var(--c),
         calc(var(--p) * 5) 0                       var(--c),
-        /* row 1 (head top) */
         calc(var(--p) * 2) calc(var(--p) * 1)      var(--c),
         calc(var(--p) * 3) calc(var(--p) * 1)      var(--c),
         calc(var(--p) * 4) calc(var(--p) * 1)      var(--c),
         calc(var(--p) * 5) calc(var(--p) * 1)      var(--c),
-        /* row 2 (eyes) */
         calc(var(--p) * 1) calc(var(--p) * 2)      var(--c),
         calc(var(--p) * 2) calc(var(--p) * 2)      #000,
         calc(var(--p) * 3) calc(var(--p) * 2)      var(--c),
         calc(var(--p) * 4) calc(var(--p) * 2)      var(--c),
         calc(var(--p) * 5) calc(var(--p) * 2)      #000,
         calc(var(--p) * 6) calc(var(--p) * 2)      var(--c),
-        /* row 3 (mouth) */
         calc(var(--p) * 1) calc(var(--p) * 3)      var(--c),
         calc(var(--p) * 2) calc(var(--p) * 3)      var(--c),
         calc(var(--p) * 3) calc(var(--p) * 3)      #000,
         calc(var(--p) * 4) calc(var(--p) * 3)      #000,
         calc(var(--p) * 5) calc(var(--p) * 3)      var(--c),
         calc(var(--p) * 6) calc(var(--p) * 3)      var(--c),
-        /* row 4 (body) */
         calc(var(--p) * 0) calc(var(--p) * 4)      var(--c),
         calc(var(--p) * 1) calc(var(--p) * 4)      var(--c),
         calc(var(--p) * 2) calc(var(--p) * 4)      var(--c),
         calc(var(--p) * 5) calc(var(--p) * 4)      var(--c),
         calc(var(--p) * 6) calc(var(--p) * 4)      var(--c),
         calc(var(--p) * 7) calc(var(--p) * 4)      var(--c),
-        /* row 5 (body) */
         calc(var(--p) * 1) calc(var(--p) * 5)      var(--c),
         calc(var(--p) * 2) calc(var(--p) * 5)      var(--c),
         calc(var(--p) * 3) calc(var(--p) * 5)      var(--c),
         calc(var(--p) * 4) calc(var(--p) * 5)      var(--c),
         calc(var(--p) * 5) calc(var(--p) * 5)      var(--c),
         calc(var(--p) * 6) calc(var(--p) * 5)      var(--c),
-        /* row 6 (legs) */
         calc(var(--p) * 1) calc(var(--p) * 6)      var(--c),
         calc(var(--p) * 2) calc(var(--p) * 6)      var(--c),
         calc(var(--p) * 5) calc(var(--p) * 6)      var(--c),
         calc(var(--p) * 6) calc(var(--p) * 6)      var(--c),
-        /* row 7 (feet) */
         calc(var(--p) * 1) calc(var(--p) * 7)      var(--c),
         calc(var(--p) * 6) calc(var(--p) * 7)      var(--c);
-    /* The first pixel itself is the root pixel (col 1 row 0 antenna) */
     transform: translate(var(--p), 0);
 }
 
-.sprite--working    { --c: var(--working); animation: bob 0.6s steps(2) infinite; }
-.sprite--idle       { --c: var(--idle); }
-.sprite--permission { --c: var(--permission); animation: shake 0.5s steps(2) infinite; }
-.sprite--error      { --c: var(--error); }
+/* Sprite in detail header is bigger. */
+.detail-header .sprite { --p: 4px; }
+
+.sprite--working { --c: var(--working); animation: bob 0.6s steps(2) infinite; }
+.sprite--idle    { --c: var(--idle); }
+.sprite--waiting { --c: var(--waiting); animation: shake 0.5s steps(2) infinite; }
+.sprite--error   { --c: var(--error); }
 
 @keyframes bob   { 50% { transform: translateY(-2px); } }
 @keyframes shake { 25% { transform: translateX(-2px); } 75% { transform: translateX(2px); } }
@@ -300,45 +311,60 @@ input:focus { outline: 1px solid var(--accent); }
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 2px;
-    padding: 16px;
+    padding: 12px;
     overflow-y: auto;
-    height: 100%;
+    align-self: start;
+    position: sticky;
+    top: 12px;
+    max-height: calc(100vh - 120px);
 }
 
 .detail-empty {
     display: flex;
     align-items: center;
     justify-content: center;
-    height: 100%;
+    padding: 30px 10px;
 }
 
-.detail-card { display: flex; flex-direction: column; gap: 18px; }
+.detail-card { display: flex; flex-direction: column; gap: 14px; }
 
 .detail-header {
     display: grid;
-    grid-template-columns: auto 1fr auto;
+    grid-template-columns: auto 1fr auto auto;
     align-items: center;
-    gap: 12px;
-    padding-bottom: 12px;
+    gap: 10px;
+    padding-bottom: 10px;
     border-bottom: 1px solid var(--line);
 }
 
-.detail-title { font-size: 16px; }
+.detail-title { font-size: 14px; }
 .detail-sub { font-size: 11px; }
 
+.detail-close {
+    width: 24px;
+    height: 24px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 16px;
+    line-height: 1;
+}
+.detail-close:hover { color: var(--text); border-color: var(--accent); }
+
 .badge {
-    padding: 4px 8px;
-    font-size: 11px;
+    padding: 3px 8px;
+    font-size: 10px;
     border: 1px solid var(--line);
     border-radius: 2px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
 }
-.badge--working    { color: var(--working); border-color: var(--working); }
-.badge--idle       { color: var(--idle); }
-.badge--permission { color: var(--permission); border-color: var(--permission); animation: blink 1s steps(2) infinite; }
-.badge--error      { color: var(--error); border-color: var(--error); }
+.badge--working { color: var(--working); border-color: var(--working); }
+.badge--idle    { color: var(--idle); }
+.badge--waiting { color: var(--waiting); border-color: var(--waiting); animation: blink 1s steps(2) infinite; }
+.badge--error   { color: var(--error); border-color: var(--error); }
 
 .detail-section h3 {
-    font-size: 11px;
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 1px;
     color: var(--muted);
@@ -351,7 +377,7 @@ input:focus { outline: 1px solid var(--accent); }
     padding: 10px;
     white-space: pre-wrap;
     word-break: break-word;
-    max-height: 240px;
+    max-height: 220px;
     overflow-y: auto;
     font-size: 12px;
 }
@@ -362,6 +388,7 @@ input:focus { outline: 1px solid var(--accent); }
     padding: 4px 6px;
     border: 1px solid var(--line);
     word-break: break-all;
+    font-size: 11px;
 }
 
 .kv-grid {
@@ -373,16 +400,16 @@ input:focus { outline: 1px solid var(--accent); }
 
 /* ---------- panels (usage / api / settings) ---------- */
 .panel {
-    padding: 20px 24px;
+    padding: 16px 20px;
     max-width: 960px;
     margin: 0 auto;
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 14px;
 }
 
 .panel h2 {
-    font-size: 14px;
+    font-size: 13px;
     text-transform: uppercase;
     letter-spacing: 2px;
     color: var(--accent);
@@ -391,23 +418,23 @@ input:focus { outline: 1px solid var(--accent); }
 .summary-cards {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-    gap: 10px;
+    gap: 8px;
 }
 
 .card {
     background: var(--panel);
     border: 1px solid var(--line);
-    padding: 12px;
+    padding: 10px;
     border-radius: 2px;
 }
-.card-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
-.card-value { font-size: 18px; margin-top: 6px; color: var(--accent); }
+.card-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+.card-value { font-size: 16px; margin-top: 4px; color: var(--accent); }
 
 .chart {
     background: var(--panel);
     border: 1px solid var(--line);
-    padding: 16px;
-    height: 240px;
+    padding: 14px;
+    height: 220px;
 }
 
 .bar-chart {
@@ -446,10 +473,11 @@ input:focus { outline: 1px solid var(--accent); }
 .form-row input { flex: 1; min-width: 200px; }
 
 .btn {
-    padding: 8px 14px;
+    padding: 6px 12px;
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 2px;
+    font-size: 12px;
 }
 .btn:hover { border-color: var(--accent); }
 .btn.primary { background: var(--accent); color: #000; border-color: var(--accent); }
@@ -480,9 +508,9 @@ input:focus { outline: 1px solid var(--accent); }
     letter-spacing: 1px;
 }
 
-.form { display: flex; flex-direction: column; gap: 16px; }
+.form { display: flex; flex-direction: column; gap: 14px; }
 .form-field { display: flex; flex-direction: column; gap: 4px; }
-.form-field span { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+.form-field span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
 
 /* ---------- toast ---------- */
 .toast {
@@ -490,8 +518,8 @@ input:focus { outline: 1px solid var(--accent); }
     right: 16px;
     bottom: 16px;
     background: var(--panel);
-    border: 1px solid var(--permission);
-    color: var(--permission);
+    border: 1px solid var(--waiting);
+    color: var(--waiting);
     padding: 10px 14px;
     box-shadow: 0 0 20px rgba(251, 191, 36, 0.4);
     animation: slide-in 0.2s ease-out;

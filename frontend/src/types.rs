@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub enum AgentStatus {
     Idle,
     Working,
-    NeedsPermission,
+    Waiting,
     Error,
 }
 
@@ -14,18 +14,22 @@ impl AgentStatus {
         match self {
             AgentStatus::Idle => "idle",
             AgentStatus::Working => "working",
-            AgentStatus::NeedsPermission => "permission",
+            AgentStatus::Waiting => "waiting",
             AgentStatus::Error => "error",
         }
     }
 
     pub fn label(&self) -> &'static str {
         match self {
-            AgentStatus::Idle => "Idle",
+            AgentStatus::Idle => "Ended",
             AgentStatus::Working => "Working",
-            AgentStatus::NeedsPermission => "Needs Permission",
+            AgentStatus::Waiting => "Waiting for response",
             AgentStatus::Error => "Error",
         }
+    }
+
+    pub fn is_active(&self) -> bool {
+        matches!(self, AgentStatus::Working | AgentStatus::Waiting | AgentStatus::Error)
     }
 }
 

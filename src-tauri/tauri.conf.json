@@ -4,12 +4,13 @@
   "version": "0.1.0",
   "identifier": "com.claudemonitor.app",
   "build": {
-    "beforeDevCommand": "trunk serve --port 1420",
-    "beforeBuildCommand": "trunk build --release",
+    "beforeDevCommand": "cd frontend && trunk serve --port 1420",
+    "beforeBuildCommand": "cd frontend && trunk build --release",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../frontend/dist"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "Claude Monitor",

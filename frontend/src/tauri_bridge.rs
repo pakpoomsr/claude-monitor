@@ -20,6 +20,9 @@ extern "C" {
 /// Invoke a Tauri command. `args` should be a `#[derive(Serialize)]` struct
 /// whose fields match the command's parameter names.
 pub async fn invoke<R: DeserializeOwned, A: Serialize>(cmd: &str, args: &A) -> Result<R, String> {
+    if !is_tauri() {
+        return Err("not running inside Tauri".into());
+    }
     let args_js = to_value(args).map_err(|e| e.to_string())?;
     let promise = ts_invoke(cmd, args_js);
     let result = wasm_bindgen_futures::JsFuture::from(promise)
@@ -36,11 +39,18 @@ pub async fn invoke_no_args<R: DeserializeOwned>(cmd: &str) -> Result<R, String>
 /// Listen for events emitted by the backend. The handler receives the
 /// deserialized payload. Listener stays alive for the lifetime of the app
 /// (we leak the closure deliberately).
+///
+/// If `window.__TAURI__` is unavailable (e.g. running `trunk serve` in a
+/// regular browser for styling work) this is a no-op rather than a panic.
 pub fn listen<T, F>(event: &str, mut handler: F)
 where
     T: DeserializeOwned + 'static,
     F: FnMut(T) + 'static,
 {
+    if !is_tauri() {
+        return;
+    }
+
     let closure = Closure::wrap(Box::new(move |raw: JsValue| {
         // Tauri wraps the payload as { event, id, payload }
         if let Ok(payload) = Reflect::get(&raw, &JsValue::from_str("payload")) {
@@ -70,6 +80,7 @@ fn js_err(v: &JsValue) -> String {
 
 /// True when running inside a Tauri webview (window.__TAURI__ is defined).
 /// Useful for graceful fallback when running `trunk serve` standalone.
+#[allow(dead_code)]
 pub fn is_tauri() -> bool {
     let Some(window) = web_sys::window() else { return false };
     let Ok(t) = Reflect::get(&window, &JsValue::from_str("__TAURI__")) else { return false };

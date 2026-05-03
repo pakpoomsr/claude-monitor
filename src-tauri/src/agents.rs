@@ -10,11 +10,16 @@ use tokio::time;
 use crate::parser::ClaudeEvent;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub enum AgentStatus {
+    /// Session ended or has been quiet for `idle_timeout_secs` — historical.
     Idle,
+    /// Recent activity, no stale tool.
     Working,
-    NeedsPermission,
+    /// Recent activity AND a tool_use has been pending past
+    /// `permission_timeout_secs` without a matching tool_result. Idle takes
+    /// priority — once the session goes idle, this drops back to Idle.
+    Waiting,
     Error,
 }
 
@@ -103,19 +108,23 @@ impl AgentRegistry {
     }
 
     /// Apply parsed events from a single session, return the new snapshot.
+    /// `at` is the timestamp to attribute the activity to — pass file mtime
+    /// for an initial scan of an existing JSONL file (so old sessions don't
+    /// look fresh), pass `Utc::now()` for live updates.
     pub fn apply_events(
         &self,
         session_id: &str,
         events: &[ClaudeEvent],
+        at: DateTime<Utc>,
     ) -> Option<AgentSnapshot> {
         if events.is_empty() {
             return None;
         }
 
-        let preview_chars = self.settings.read().message_preview_chars;
+        let settings = self.settings.read().clone();
+        let preview_chars = settings.message_preview_chars;
 
         let mut agents = self.agents.write();
-        let now = Utc::now();
         let agent = agents.entry(session_id.to_string()).or_insert_with(|| AgentInner {
             snapshot: AgentSnapshot {
                 session_id: session_id.to_string(),
@@ -128,8 +137,8 @@ impl AgentRegistry {
                 output_tokens: 0,
                 cache_tokens: 0,
                 cost_usd: 0.0,
-                last_activity: now,
-                started_at: now,
+                last_activity: at,
+                started_at: at,
             },
             pending_tools: HashMap::new(),
         });
@@ -159,7 +168,7 @@ impl AgentRegistry {
                         id.clone(),
                         PendingTool {
                             name: tool.clone(),
-                            started_at: now,
+                            started_at: at,
                             flagged_permission: false,
                         },
                     );
@@ -177,9 +186,20 @@ impl AgentRegistry {
             }
         }
 
-        agent.snapshot.last_activity = now;
-        agent.snapshot.status = if agent.pending_tools.values().any(|t| t.flagged_permission) {
-            AgentStatus::NeedsPermission
+        agent.snapshot.last_activity = at;
+
+        // Compute status with the same rules tick() uses, so that an initial
+        // scan of an old file emits the right (Idle) status straight away
+        // instead of briefly flashing Working.
+        let now = Utc::now();
+        let idle_secs = now
+            .signed_duration_since(agent.snapshot.last_activity)
+            .num_seconds()
+            .max(0) as u64;
+        agent.snapshot.status = if idle_secs >= settings.idle_timeout_secs {
+            AgentStatus::Idle
+        } else if agent.pending_tools.values().any(|t| t.flagged_permission) {
+            AgentStatus::Waiting
         } else {
             AgentStatus::Working
         };
@@ -188,71 +208,82 @@ impl AgentRegistry {
     }
 
     /// Periodic tick: flip stale agents to Idle, flag long-pending tools as
-    /// NeedsPermission. Returns (status_changes, newly_needing_permission).
+    /// Waiting. Idle takes priority — once an agent has been quiet past the
+    /// idle timeout it drops to Idle even if a tool was left pending.
+    /// Returns (status_changes, newly_waiting_for_response).
     pub fn tick(&self) -> (Vec<AgentSnapshot>, Vec<AgentSnapshot>) {
         let settings = self.settings.read().clone();
         let now = Utc::now();
         let mut changes = Vec::new();
-        let mut new_permission = Vec::new();
+        let mut newly_waiting = Vec::new();
 
         let mut agents = self.agents.write();
         for agent in agents.values_mut() {
             let prev_status = agent.snapshot.status;
 
+            let idle_secs = now
+                .signed_duration_since(agent.snapshot.last_activity)
+                .num_seconds()
+                .max(0) as u64;
+            let is_idle = idle_secs >= settings.idle_timeout_secs;
+
+            // Only flag long-pending tools while the session is still active.
+            // Once it goes idle, pending tools are stale (the session ended
+            // without writing a tool_result) — not actually waiting on user.
             let mut newly_flagged = false;
-            for tool in agent.pending_tools.values_mut() {
-                if !tool.flagged_permission {
-                    let elapsed = now
-                        .signed_duration_since(tool.started_at)
-                        .num_seconds()
-                        .max(0) as u64;
-                    if elapsed >= settings.permission_timeout_secs {
-                        tool.flagged_permission = true;
-                        newly_flagged = true;
+            if !is_idle {
+                for tool in agent.pending_tools.values_mut() {
+                    if !tool.flagged_permission {
+                        let elapsed = now
+                            .signed_duration_since(tool.started_at)
+                            .num_seconds()
+                            .max(0) as u64;
+                        if elapsed >= settings.permission_timeout_secs {
+                            tool.flagged_permission = true;
+                            newly_flagged = true;
+                        }
                     }
                 }
             }
 
-            if agent.pending_tools.values().any(|t| t.flagged_permission) {
-                agent.snapshot.status = AgentStatus::NeedsPermission;
+            agent.snapshot.status = if is_idle {
+                AgentStatus::Idle
+            } else if agent.pending_tools.values().any(|t| t.flagged_permission) {
+                AgentStatus::Waiting
             } else {
-                let idle_secs = now
-                    .signed_duration_since(agent.snapshot.last_activity)
-                    .num_seconds()
-                    .max(0) as u64;
-                agent.snapshot.status = if idle_secs >= settings.idle_timeout_secs {
-                    AgentStatus::Idle
-                } else {
-                    AgentStatus::Working
-                };
-            }
+                AgentStatus::Working
+            };
 
             if agent.snapshot.status != prev_status {
                 changes.push(agent.snapshot.clone());
-                if agent.snapshot.status == AgentStatus::NeedsPermission && newly_flagged {
-                    new_permission.push(agent.snapshot.clone());
+                if agent.snapshot.status == AgentStatus::Waiting && newly_flagged {
+                    newly_waiting.push(agent.snapshot.clone());
                 }
             }
         }
 
-        (changes, new_permission)
+        (changes, newly_waiting)
     }
 }
 
 /// Spawn a background task that ticks the registry every second and emits
 /// `agent-status` events when an agent's status changes, plus
-/// `permission-needed` when a new agent needs approval.
+/// `agent-waiting` when a new agent transitions to Waiting (alert).
+///
+/// Uses `tauri::async_runtime::spawn` so this can be called from inside the
+/// Tauri builder `.setup()` closure (where there's no ambient Tokio runtime
+/// yet).
 pub fn spawn_tick_loop(app: AppHandle, registry: Arc<AgentRegistry>) {
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let mut interval = time::interval(Duration::from_secs(1));
         loop {
             interval.tick().await;
-            let (changes, permission_needed) = registry.tick();
+            let (changes, newly_waiting) = registry.tick();
             for snap in &changes {
                 let _ = app.emit("agent-status", snap);
             }
-            for snap in &permission_needed {
-                let _ = app.emit("permission-needed", snap);
+            for snap in &newly_waiting {
+                let _ = app.emit("agent-waiting", snap);
             }
         }
     });

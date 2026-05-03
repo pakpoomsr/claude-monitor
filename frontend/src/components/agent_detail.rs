@@ -6,6 +6,7 @@ use crate::types::{project_label, short_id, AgentSnapshot};
 pub fn AgentDetail(
     agents: ReadSignal<Vec<AgentSnapshot>>,
     selected: ReadSignal<Option<String>>,
+    set_selected: WriteSignal<Option<String>>,
 ) -> impl IntoView {
     let snap = move || {
         let id = selected.get()?;
@@ -16,7 +17,7 @@ pub fn AgentDetail(
         <aside class="detail">
             {move || match snap() {
                 None => view! {
-                    <div class="detail-empty muted">"Click an agent tile to inspect it."</div>
+                    <div class="detail-empty muted">"Agent no longer in the list."</div>
                 }.into_any(),
                 Some(s) => {
                     let cls = s.status.css_class();
@@ -29,6 +30,11 @@ pub fn AgentDetail(
                                     <div class="detail-sub muted">{short_id(&s.session_id)}</div>
                                 </div>
                                 <span class=format!("badge badge--{cls}")>{s.status.label()}</span>
+                                <button
+                                    class="detail-close"
+                                    title="Close"
+                                    on:click=move |_| set_selected.set(None)
+                                >"×"</button>
                             </header>
 
                             <section class="detail-section">
