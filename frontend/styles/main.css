@@ -619,6 +619,37 @@ input:focus { outline: 1px solid var(--accent); }
 .form-field { display: flex; flex-direction: column; gap: 4px; }
 .form-field span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
 
+/* ---------- hooks UI ---------- */
+.hook-badge {
+    color: var(--idle);
+    border: 1px solid var(--line);
+    padding: 1px 8px;
+    border-radius: 2px;
+    font-size: 10px;
+    letter-spacing: 1px;
+    cursor: help;
+}
+.hook-badge .dot { background: var(--idle); }
+.hook-badge.on {
+    color: var(--working);
+    border-color: var(--working);
+}
+.hook-badge.on .dot {
+    background: var(--working);
+    box-shadow: 0 0 6px var(--working);
+}
+
+.hooks-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.hooks-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.hooks-status.on { color: var(--working); }
+.hooks-status.on .dot { background: var(--working); box-shadow: 0 0 6px var(--working); }
+.hooks-status.off { color: var(--muted); }
+.hooks-status.off .dot { background: var(--idle); box-shadow: none; }
+
 /* ---------- toast ---------- */
 .toast {
     position: fixed;

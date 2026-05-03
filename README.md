@@ -2,102 +2,136 @@
 
 A pixel-style desktop dashboard that watches your Claude Code agents in real time.
 
-**Pure Rust** — Tauri 2 backend + Leptos (CSR) WASM frontend. No JavaScript framework.
+**Pure Rust** — Tauri 2 backend + Leptos 0.7 (CSR) WASM frontend. No JavaScript framework.
 
 ## What it shows
 
-- **Pixel-agent grid** — one tile per active Claude Code session, color-coded by status
-  - 🟢 **Working** — assistant message or tool currently in flight
-  - ⚪ **Idle** — no events for N seconds (configurable)
-  - 🟡 **Needs permission** — tool started but no `tool_result` after N seconds (heuristic)
-  - 🔴 **Error**
-- **Live status message** — last assistant text + name of in-flight tool
-- **Usage panel** — today's tokens/cost + 7-day bar chart
-- **API panel** — optional Anthropic billing-API view (paste a key, it stays in memory)
-- **Tray icon + notifications** — toast when an agent needs permission
+- **Pixel-agent grid** — one tile per Claude Code session, color-coded by status, animated sprite per state
+  - 🟢 **Working** — assistant or tool currently in flight
+  - 🟡 **Waiting** — turn ended, Claude is waiting on your input (or stuck on a permission prompt)
+  - ⚪ **Idle** — no activity for `idle_timeout_secs` (treated as ended/historical)
+  - 🔴 **Error** (reserved)
+- **Sub-agent grouping** — Task-tool sub-agents are nested under their parent session with `↳ sub-agent <id>` indented rows. The group's headline status is the most-active member, so a parent "Waiting on its sub" is correctly counted as **Working**.
+- **Filter pills** — All / Active / Idle on the Agents tab; filter applies to both top-level agents and their sub-agents.
+- **Live status detail** — click any tile to see the agent's last assistant message, in-flight tool, tokens, cost, project path.
+- **Real-time hooks** — opt-in: a one-click button registers Claude Code hook entries that POST authoritative events (PreToolUse, Stop, Notification, SubagentStart, …) to an embedded localhost HTTP server. Far more accurate than file-tailing heuristics.
+- **JSONL fallback** — when hooks aren't registered, status is inferred from `~/.claude/projects/**/*.jsonl` events with a state machine that includes the `system/turn_duration` end-of-turn marker.
+- **Usage panel** — today's tokens/cost + 7-day bar chart.
+- **API panel** — optional Anthropic billing API view (paste a key, kept in memory only).
+- **Tray icon + toast** — yellow toast pops up when an agent flips to Waiting.
 
 ## Architecture
 
 ```
 claude-monitor/
-├── Cargo.toml                # workspace root
-├── src-tauri/                # native backend
+├── Cargo.toml                     # workspace root
+├── src-tauri/                     # native backend
 │   ├── Cargo.toml
 │   ├── tauri.conf.json
 │   ├── capabilities/default.json
 │   └── src/
-│       ├── main.rs           # Tauri commands, tray, app wiring
-│       ├── watcher.rs        # tails ~/.claude/projects/**/*.jsonl
-│       ├── parser.rs         # JSONL → ClaudeEvent
-│       ├── agents.rs         # in-memory AgentRegistry + idle/permission tick loop
-│       ├── db.rs             # SQLite history (rusqlite, bundled)
-│       └── api.rs            # Anthropic billing API client
-└── frontend/                 # Rust → WASM via Trunk
+│       ├── main.rs                # Tauri commands, tray, app wiring
+│       ├── watcher.rs             # tails ~/.claude/projects/**/*.jsonl
+│       ├── parser.rs              # JSONL → ClaudeEvent
+│       ├── agents.rs              # AgentRegistry, state machine, tick loop, HookEvent
+│       ├── hooks.rs               # axum HTTP server for Claude Code hooks
+│       ├── settings_writer.rs     # registers hooks in ~/.claude/settings.json
+│       ├── db.rs                  # SQLite history (rusqlite, bundled)
+│       └── api.rs                 # Anthropic billing API client
+└── frontend/                      # Rust → WASM via Trunk
     ├── Cargo.toml
     ├── Trunk.toml
     ├── index.html
-    ├── styles/main.css       # pixel-art theme (CSS-only sprites)
+    ├── styles/main.css            # pixel-art theme (CSS-only sprites + animations)
     └── src/
-        ├── main.rs           # Leptos app shell
-        ├── tauri_bridge.rs   # invoke / listen wrappers
-        ├── types.rs
+        ├── main.rs                # Leptos app shell, tab routing, header indicators
+        ├── tauri_bridge.rs        # invoke / listen wrappers around window.__TAURI__
+        ├── types.rs               # AgentStatus, AgentSnapshot, AgentGroup, Filter, HooksStatus
         └── components/
-            ├── agent_grid.rs
-            ├── agent_detail.rs
-            ├── usage_panel.rs
-            ├── api_usage_panel.rs
-            └── settings.rs
+            ├── agent_grid.rs      # group rendering with nested sub-agents
+            ├── agent_detail.rs    # selected-agent inspector
+            ├── usage_panel.rs     # local SQLite usage chart
+            ├── api_usage_panel.rs # Anthropic billing-API view
+            └── settings.rs        # hook setup + state machine thresholds
 ```
 
 ## Prerequisites
 
 ```bash
-# Rust toolchain
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# WASM target (for the Leptos frontend)
-rustup target add wasm32-unknown-unknown
-
-# Trunk — bundler for WASM apps
-cargo install trunk
-
-# Tauri CLI
-cargo install tauri-cli --version "^2"
+rustup target add wasm32-unknown-unknown      # WASM target
+cargo install trunk                           # WASM bundler
+cargo install tauri-cli --version "^2"        # Tauri build orchestrator
 ```
 
-On Linux you'll also need the standard Tauri 2 system deps (webkit2gtk, libssl, etc.) — see https://tauri.app/start/prerequisites/.
+On Linux you'll also need standard Tauri 2 system deps (webkit2gtk, libssl, etc.) — see https://tauri.app/start/prerequisites/.
 
 ## Run
 
 ```bash
-# Dev (hot-reloads frontend, restarts backend on Rust change)
-cargo tauri dev
-
-# Production build
-cargo tauri build
+cargo tauri dev      # dev with hot reload
+cargo tauri build    # release bundle
 ```
 
-The dev command runs `trunk serve` automatically (configured in `tauri.conf.json`) and launches the Tauri shell pointing at it.
+The dev command runs `cd frontend && trunk serve --port 1420` automatically (configured in `tauri.conf.json`) and launches the Tauri webview pointing at it.
 
 ## How status detection works
 
-Claude Code transcripts live at `~/.claude/projects/<hash>/<session-id>.jsonl`.
+There are **two signal sources** that converge on a single state machine in `AgentRegistry`:
 
-The watcher tails these files. Each new line is parsed into events:
+### 1. Real-time hooks (authoritative — opt-in)
+
+Open Settings → click **"Set up hooks"**. The app:
+1. Backs up `~/.claude/settings.json` to `settings.json.bak` (only if no backup exists yet)
+2. Adds 10 hook entries (one per event) tagged with `_claude_monitor: true` so they can be removed cleanly. Each is `"type": "http"` pointing at `http://127.0.0.1:<random>/h` with an `X-Auth: <random>` header.
+3. Claude Code picks the changes up live — no restart.
+
+| Hook event | New status |
+|---|---|
+| `SessionStart` | Working (agent created) |
+| `PreToolUse` | Working (cancel waiting timers, push pending tool) |
+| `PostToolUse` / `PostToolUseFailure` | (turn continues, pop pending tool) |
+| `Stop` | Waiting (turn ended) |
+| `Notification(permission_prompt | idle_prompt)` | Waiting |
+| `PermissionRequest` | Waiting |
+| `SubagentStart` | child agent spawned with `parent_id` set |
+| `SubagentStop` / `SessionEnd` | natural decay → Idle |
+
+Hook events bump `last_hook_at`. While that's recent (< `hook_grace_secs`, default 30s), hooks are treated as ground truth.
+
+### 2. JSONL fallback (always on)
+
+When hooks aren't registered (or for sessions that started before they were), status is inferred from `~/.claude/projects/<hash>/<session>.jsonl`:
 
 | JSONL `type` + content | Event | Effect |
 |---|---|---|
-| `system` | `SessionStart` | First-seen project path |
-| `assistant` `content[]` `text` | `AssistantText` | Updates current_message preview |
-| `assistant` `content[]` `tool_use` | `ToolUseStart` | Adds pending tool, marks Working |
-| `assistant` `usage` | `Usage` | Increments token counters + cost |
-| `user` `content[]` `tool_result` | `ToolUseEnd` | Removes pending tool |
+| any record with `cwd` | `SessionStart` | seeds project path |
+| `system` `subtype: turn_duration` | `TurnEnd` | sets `awaiting_user = true` → Waiting |
+| `assistant` `content[].text` | `AssistantText` | updates preview; arms 5s text-idle deadline on tool-free turns |
+| `assistant` `content[].tool_use` | `ToolUseStart` | sets `had_tool_in_turn`; pushes pending tool |
+| `assistant` `usage` | `Usage` | increments token counters + cost |
+| `user` `content[].tool_result` | `ToolUseEnd` | removes pending tool |
+| `user` (no `tool_result`) | `UserMessage` | new turn → Working |
 
-A 1Hz tick loop in `agents.rs` then promotes agents to:
-- **Idle** if `last_activity` is older than `idle_timeout_secs`
-- **NeedsPermission** if any pending tool has been open longer than `permission_timeout_secs`
+A 1Hz tick loop re-evaluates with priority:
+1. Quiet for `idle_timeout_secs` → **Idle**
+2. Pending tool past `permission_timeout_secs` → **Waiting**
+3. `awaiting_user` flag set → **Waiting**
+4. Text-idle deadline reached on tool-free turn → **Waiting**
+5. Otherwise → **Working**
 
-Both thresholds are configurable in the Settings tab.
+### Sub-agent detection
+
+Path-based: files at `<projects>/<proj>/<parent_uuid>/subagents/agent-<id>.jsonl` are detected as sub-agents and registered with `parent_id = <parent_uuid>`. The frontend groups them under their parent.
+
+## Settings (defaults)
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `idle_timeout_secs` | 180 | Quiet for this long → Idle (history) |
+| `permission_timeout_secs` | 7 | Tool pending this long → Waiting |
+| `text_idle_secs` | 5 | Text-only turn quiet for this long → Waiting |
+| `hook_grace_secs` | 30 | When to treat hooks as authoritative |
+| `message_preview_chars` | 280 | Trim length for assistant message preview |
 
 ## Tauri commands (frontend ↔ backend)
 
@@ -105,11 +139,13 @@ Both thresholds are configurable in the Settings tab.
 |---|---|
 | `list_agents` | `Vec<AgentSnapshot>` |
 | `get_agent { session_id }` | `Option<AgentSnapshot>` |
-| `get_agent_settings` / `set_agent_settings` | `AgentSettings` |
-| `get_daily_summary` / `get_weekly_chart` / `get_sessions` | local SQLite stats |
-| `set_api_key { key }` / `fetch_api_usage` | Anthropic billing-API view |
+| `get_agent_settings` / `set_agent_settings { settings }` | `AgentSettings` |
+| `hooks_status` | `HooksStatus { registered, url, port }` |
+| `register_hooks` / `unregister_hooks` | `HooksStatus` |
+| `get_daily_summary` / `get_weekly_chart` / `get_sessions { limit }` | SQLite history |
+| `set_api_key { key }` / `fetch_api_usage` | Anthropic billing API |
 
-Events emitted to the frontend: `agent-status`, `permission-needed`.
+Events emitted to the frontend: `agent-status`, `agent-waiting`.
 
 ## Pricing assumptions (per million tokens)
 
@@ -121,10 +157,18 @@ Events emitted to the frontend: `agent-status`, `permission-needed`.
 
 Edit `src-tauri/src/agents.rs::estimate_cost` to adjust.
 
+## Caveats
+
+- The hook HTTP server binds to a **random ephemeral port** on each app launch. After registering hooks, restarting the app means the hook entries in `settings.json` point to the now-closed port — re-click "Set up hooks" to refresh them (idempotent: replaces entries tagged `_claude_monitor: true`).
+- The `tauri.conf.json` setting `app.withGlobalTauri: true` is required so the WASM bridge can use `window.__TAURI__.event.listen` — don't remove it.
+- `beforeDevCommand` must run from `frontend/`, hence the `cd frontend &&` prefix — Tauri runs the command from the project root by default.
+- Hook entries are tagged `_claude_monitor: true`. If you edit `~/.claude/settings.json` manually, leave that key alone or unregister via the app first.
+
 ## Roadmap
 
-- [ ] Per-project rollup view (group sessions by project)
-- [ ] Native rate-limit alerts (cross-platform via `tauri-plugin-notification`)
+- [ ] Pin hook server to a fixed port so registrations survive restarts
+- [ ] Per-project rollup view
+- [ ] Native rate-limit alerts via `tauri-plugin-notification`
 - [ ] Export CSV
-- [ ] Sprite skin picker (different pixel art per status)
-- [ ] Detect permission events directly when Claude Code starts logging them
+- [ ] Sprite skin picker
+- [ ] Detect Claude Code subscription plan

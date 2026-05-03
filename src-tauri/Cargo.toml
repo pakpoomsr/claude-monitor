@@ -23,6 +23,8 @@ dirs = "5"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 anyhow = "1"
 parking_lot = "0.12"
+axum = "0.7"
+rand = "0.8"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

@@ -9,7 +9,7 @@ use components::{
     settings::SettingsPanel, usage_panel::UsagePanel,
 };
 use tauri_bridge::{invoke_no_args, listen};
-use types::{apply_filter, build_groups, AgentGroup, AgentSnapshot, AgentStatus, Filter};
+use types::{apply_filter, build_groups, AgentGroup, AgentSnapshot, AgentStatus, Filter, HooksStatus};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -31,6 +31,18 @@ fn App() -> impl IntoView {
     let (tab, set_tab) = signal(Tab::Agents);
     let (toast, set_toast) = signal::<Option<String>>(None);
     let (filter, set_filter) = signal(Filter::Active);
+    let (hooks, set_hooks) = signal(HooksStatus::default());
+
+    // Periodically poll hooks_status so the indicator updates when the user
+    // toggles registration in the Settings panel. Cheap (single Tauri call).
+    leptos::task::spawn_local(async move {
+        loop {
+            if let Ok(h) = invoke_no_args::<HooksStatus>("hooks_status").await {
+                set_hooks.set(h);
+            }
+            gloo_sleep(2000).await;
+        }
+    });
 
     leptos::task::spawn_local(async move {
         if let Ok(list) = invoke_no_args::<Vec<AgentSnapshot>>("list_agents").await {
@@ -112,6 +124,18 @@ fn App() -> impl IntoView {
                     </span>
                     <span class="stat muted">
                         {move || format!("{} idle", idle_groups.get())}
+                    </span>
+                    <span
+                        class="stat hook-badge"
+                        class:on=move || hooks.get().registered
+                        title=move || if hooks.get().registered {
+                            "Real-time hooks active — Claude Code is reporting events live."
+                        } else {
+                            "Hooks not registered. Using JSONL heuristics. Set up in Settings."
+                        }
+                    >
+                        <span class="dot"></span>
+                        "HOOKS"
                     </span>
                 </div>
             </header>

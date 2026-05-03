@@ -184,6 +184,7 @@ pub struct AgentSettings {
     pub permission_timeout_secs: u64,
     pub text_idle_secs: u64,
     pub message_preview_chars: usize,
+    pub hook_grace_secs: u64,
 }
 
 impl Default for AgentSettings {
@@ -193,8 +194,16 @@ impl Default for AgentSettings {
             permission_timeout_secs: 7,
             text_idle_secs: 5,
             message_preview_chars: 280,
+            hook_grace_secs: 30,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HooksStatus {
+    pub registered: bool,
+    pub url: String,
+    pub port: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

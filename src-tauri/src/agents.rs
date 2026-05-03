@@ -57,6 +57,10 @@ pub struct AgentSettings {
     pub text_idle_secs: u64,
     /// Max characters of current_message to keep in memory + send to UI.
     pub message_preview_chars: usize,
+    /// When a hook event has been received within this window, hooks are
+    /// considered authoritative and JSONL-driven heuristics are suppressed
+    /// for that agent. Outside this window, JSONL heuristics take over.
+    pub hook_grace_secs: u64,
 }
 
 impl Default for AgentSettings {
@@ -66,6 +70,7 @@ impl Default for AgentSettings {
             permission_timeout_secs: 7,
             text_idle_secs: 5,
             message_preview_chars: 280,
+            hook_grace_secs: 30,
         }
     }
 }
@@ -92,6 +97,9 @@ struct AgentInner {
     /// Set on TurnEnd (Claude finished a turn → waiting on user's reply).
     /// Cleared on UserMessage / AssistantText / ToolUseStart.
     awaiting_user: bool,
+    /// Last time a Claude Code hook event updated this agent. When recent,
+    /// hooks are authoritative.
+    last_hook_at: Option<DateTime<Utc>>,
 }
 
 pub struct AgentRegistry {
@@ -167,6 +175,7 @@ impl AgentRegistry {
             had_tool_in_turn: false,
             text_idle_deadline: None,
             awaiting_user: false,
+            last_hook_at: None,
         });
 
         for ev in events {
@@ -239,6 +248,142 @@ impl AgentRegistry {
 
         agent.snapshot.last_activity = at;
         agent.snapshot.status = compute_status(agent, &settings, Utc::now());
+
+        Some(agent.snapshot.clone())
+    }
+
+    /// Apply a Claude Code hook event. Returns the new snapshot if the agent
+    /// changed status (or was just created). Hooks are authoritative — they
+    /// set state directly and bump `last_hook_at`, which suppresses JSONL
+    /// inference for `hook_grace_secs`.
+    pub fn apply_hook(&self, ev: &HookEvent) -> Option<AgentSnapshot> {
+        let settings = self.settings.read().clone();
+        let now = Utc::now();
+        let preview_chars = settings.message_preview_chars;
+
+        // Pick the right session_id: SubagentStart events identify a child
+        // agent via `agent_id`; everything else uses the parent `session_id`.
+        let (target_id, parent_id) = match ev.hook_event_name.as_str() {
+            "SubagentStart" | "SubagentStop" => {
+                let aid = ev.agent_id.clone().unwrap_or_else(|| ev.session_id.clone());
+                (aid, Some(ev.session_id.clone()))
+            }
+            _ => (ev.session_id.clone(), None),
+        };
+
+        let mut agents = self.agents.write();
+        let agent = agents.entry(target_id.clone()).or_insert_with(|| AgentInner {
+            snapshot: AgentSnapshot {
+                session_id: target_id.clone(),
+                project: ev.cwd.clone().unwrap_or_default(),
+                status: AgentStatus::Working,
+                current_message: String::new(),
+                current_tool: None,
+                model: String::new(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_tokens: 0,
+                cost_usd: 0.0,
+                last_activity: now,
+                started_at: now,
+                parent_id: parent_id.clone(),
+            },
+            pending_tools: HashMap::new(),
+            had_tool_in_turn: false,
+            text_idle_deadline: None,
+            awaiting_user: false,
+            last_hook_at: Some(now),
+        });
+
+        // Update project lazily if we hadn't seen it yet.
+        if agent.snapshot.project.is_empty() {
+            if let Some(cwd) = &ev.cwd {
+                agent.snapshot.project = cwd.clone();
+            }
+        }
+        if agent.snapshot.parent_id.is_none() {
+            agent.snapshot.parent_id = parent_id;
+        }
+
+        match ev.hook_event_name.as_str() {
+            "SessionStart" => {
+                agent.had_tool_in_turn = false;
+                agent.text_idle_deadline = None;
+                agent.awaiting_user = false;
+            }
+            "PreToolUse" => {
+                agent.had_tool_in_turn = true;
+                agent.text_idle_deadline = None;
+                agent.awaiting_user = false;
+                let id = ev
+                    .tool_use_id
+                    .clone()
+                    .unwrap_or_else(|| format!("hook-{}", now.timestamp_nanos_opt().unwrap_or(0)));
+                agent.pending_tools.insert(
+                    id,
+                    PendingTool {
+                        name: ev.tool_name.clone().unwrap_or_default(),
+                        started_at: now,
+                        flagged_permission: false,
+                    },
+                );
+                if let Some(t) = &ev.tool_name {
+                    agent.snapshot.current_tool = Some(t.clone());
+                }
+            }
+            "PostToolUse" | "PostToolUseFailure" => {
+                if let Some(id) = &ev.tool_use_id {
+                    agent.pending_tools.remove(id);
+                }
+                if agent.pending_tools.is_empty() {
+                    agent.snapshot.current_tool = None;
+                }
+            }
+            "Stop" => {
+                agent.had_tool_in_turn = false;
+                agent.text_idle_deadline = None;
+                agent.awaiting_user = true;
+            }
+            "Notification" => {
+                if matches!(
+                    ev.notification_type.as_deref(),
+                    Some("permission_prompt") | Some("idle_prompt")
+                ) {
+                    agent.awaiting_user = true;
+                }
+            }
+            "PermissionRequest" => {
+                agent.awaiting_user = true;
+            }
+            "SubagentStart" => {
+                agent.had_tool_in_turn = false;
+                agent.text_idle_deadline = None;
+                agent.awaiting_user = false;
+            }
+            "SubagentStop" | "SessionEnd" => {
+                // Let the idle timeout naturally pull this to Idle, OR we
+                // could mark `last_activity = epoch` to flip immediately.
+                // For SessionEnd we want immediate Idle.
+                if ev.hook_event_name == "SessionEnd" {
+                    agent.snapshot.last_activity = now
+                        - chrono::Duration::seconds(settings.idle_timeout_secs as i64 + 1);
+                }
+            }
+            _ => {}
+        }
+
+        // Optional: capture latest assistant text from PostToolUse / Stop
+        // payloads if Claude Code includes them. Best-effort.
+        if let Some(text) = &ev.last_assistant_text {
+            let trimmed: String = text.chars().take(preview_chars).collect();
+            if !trimmed.is_empty() {
+                agent.snapshot.current_message = trimmed;
+            }
+        }
+
+        agent.snapshot.last_activity = agent.snapshot.last_activity.max(now);
+        agent.last_hook_at = Some(now);
+        agent.snapshot.status = compute_status(agent, &settings, now);
 
         Some(agent.snapshot.clone())
     }
@@ -352,6 +497,26 @@ pub fn spawn_tick_loop(app: AppHandle, registry: Arc<AgentRegistry>) {
             }
         }
     });
+}
+
+/// Payload of a Claude Code hook event (POST body of an `"type":"http"`
+/// hook). Only fields we care about are deserialized; unknown fields are
+/// ignored. Field names match Claude Code's documented schema (snake_case).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct HookEvent {
+    pub hook_event_name: String,
+    #[serde(default)]
+    pub session_id: String,
+    pub agent_id: Option<String>,
+    pub cwd: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_use_id: Option<String>,
+    /// Notification subtype: e.g. `permission_prompt`, `idle_prompt`.
+    #[serde(rename = "type")]
+    pub notification_type: Option<String>,
+    /// Optional preview text some events may include.
+    pub last_assistant_text: Option<String>,
 }
 
 /// Estimate cost based on Anthropic pricing (per million tokens).
