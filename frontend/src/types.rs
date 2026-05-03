@@ -23,7 +23,7 @@ impl AgentStatus {
         match self {
             AgentStatus::Idle => "Ended",
             AgentStatus::Working => "Working",
-            AgentStatus::Waiting => "Waiting for response",
+            AgentStatus::Waiting => "Waiting",
             AgentStatus::Error => "Error",
         }
     }
@@ -257,4 +257,35 @@ pub fn project_label(path: &str) -> String {
 pub fn short_id(id: &str) -> String {
     let n = id.len().min(8);
     id[..n].to_string()
+}
+
+const AVATARS: [&str; 12] = [
+    "byte_owl",
+    "circuit_cat",
+    "amber_bot",
+    "gray_golem",
+    "red_imp",
+    "mint_mite",
+    "violet_node",
+    "teal_turtle",
+    "gold_bug",
+    "blue_stack",
+    "rose_sprite",
+    "mono_fallback",
+];
+
+/// Pick a sprite name deterministically from the agent id (FNV-1a 32-bit) so
+/// the same session always shows the same character across reloads.
+pub fn avatar_for(id: &str) -> &'static str {
+    let mut h: u32 = 0x811c9dc5;
+    for b in id.as_bytes() {
+        h ^= *b as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    AVATARS[(h as usize) % AVATARS.len()]
+}
+
+/// URL of an avatar PNG at a given pixel size (32/48/64/96/128/256).
+pub fn avatar_url(name: &str, size: u32) -> String {
+    format!("/avatars/{name}/{name}_{size}.png")
 }

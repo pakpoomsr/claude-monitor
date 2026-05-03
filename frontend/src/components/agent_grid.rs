@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 
-use crate::types::{project_label, short_id, AgentGroup, AgentSnapshot};
+use crate::types::{avatar_for, avatar_url, project_label, short_id, AgentGroup, AgentSnapshot};
 
 #[component]
 pub fn AgentGrid(
@@ -71,6 +71,8 @@ fn AgentTile(
 ) -> impl IntoView {
     let id = snap.session_id.clone();
     let status_class = snap.status.css_class();
+    let avatar_name = avatar_for(&snap.session_id);
+    let avatar_src = avatar_url(avatar_name, 96);
     let label = if is_child {
         format!("↳ sub-agent {}", short_id(&snap.session_id))
     } else {
@@ -90,8 +92,13 @@ fn AgentTile(
             on:click=move |_| set_selected.set(Some(id.clone()))
             title=preview
         >
-            <div class="sprite-frame">
-                <div class=format!("sprite sprite--{status_class}")></div>
+            <div class=format!("sprite-frame sprite-frame--{status_class}")>
+                <img
+                    class=format!("avatar avatar--{status_class}")
+                    src=avatar_src
+                    alt=avatar_name
+                    draggable="false"
+                />
             </div>
             <div class="tile-body">
                 <div class="tile-row">

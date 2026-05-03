@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 
-use crate::types::{project_label, short_id, AgentSnapshot};
+use crate::types::{avatar_for, avatar_url, project_label, short_id, AgentSnapshot};
 
 #[component]
 pub fn AgentDetail(
@@ -21,10 +21,19 @@ pub fn AgentDetail(
                 }.into_any(),
                 Some(s) => {
                     let cls = s.status.css_class();
+                    let avatar_name = avatar_for(&s.session_id);
+                    let avatar_src = avatar_url(avatar_name, 128);
                     view! {
                         <div class=format!("detail-card detail-card--{cls}")>
                             <header class="detail-header">
-                                <div class=format!("sprite sprite--{cls}")></div>
+                                <div class=format!("sprite-frame sprite-frame--lg sprite-frame--{cls}")>
+                                    <img
+                                        class=format!("avatar avatar--{cls}")
+                                        src=avatar_src
+                                        alt=avatar_name
+                                        draggable="false"
+                                    />
+                                </div>
                                 <div>
                                     <h2 class="detail-title">{project_label(&s.project)}</h2>
                                     <div class="detail-sub muted">{short_id(&s.session_id)}</div>

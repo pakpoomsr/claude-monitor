@@ -667,3 +667,23 @@ input:focus { outline: 1px solid var(--accent); }
     from { transform: translateY(20px); opacity: 0; }
     to { transform: translateY(0); opacity: 1; }
 }
+
+/* ---------- character avatars ---------- */
+.avatar {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    image-rendering: pixelated;
+    user-select: none;
+    -webkit-user-drag: none;
+}
+.avatar--working { animation: bob 0.6s steps(2) infinite; }
+.avatar--waiting { animation: shake 0.5s steps(2) infinite; }
+.avatar--idle    { opacity: 0.55; filter: grayscale(0.5); }
+
+.sprite-frame--working { border-color: var(--working); box-shadow: inset 0 0 0 1px var(--working); }
+.sprite-frame--waiting { border-color: var(--waiting); box-shadow: inset 0 0 0 1px var(--waiting); }
+.sprite-frame--error   { border-color: var(--error);   box-shadow: inset 0 0 0 1px var(--error); }
+.sprite-frame--idle    { border-color: var(--line); }
+
+.sprite-frame--lg { width: 64px; height: 64px; }
