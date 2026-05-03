@@ -844,13 +844,165 @@ code, pre, .mono {
 .kv-grid > span:nth-child(even) { color: var(--text); font-variant-numeric: tabular-nums; }
 
 /* =========================================================================
-   Token usage meter — stacked horizontal bar
+   Token usage meters — separate I/O bar + cache hit gauge.
+   Cache reads dwarf fresh tokens 10–100×, so showing them in the same
+   stacked bar makes Input/Output invisible. Two bars, two stories.
    ========================================================================= */
 .token-meter {
     display: flex;
     flex-direction: column;
+    gap: 12px;
+}
+.token-meter-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.token-meter-caption {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+}
+.token-meter-pct {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-soft);
+    font-variant-numeric: tabular-nums;
+    text-transform: none;
+    letter-spacing: 0;
+}
+.token-meter-pct--good { color: var(--working); }
+
+/* info icon — small (i) trigger.
+   The tooltip itself is a sibling block so it can't be clipped by an
+   overflow:auto ancestor (and backdrop-filter ancestors break fixed too). */
+.info-icon {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 1px solid var(--line-strong);
+    background: var(--panel-2);
+    color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    font-weight: 700;
+    font-style: italic;
+    font-family: 'Inter', sans-serif;
+    margin-left: 6px;
+    vertical-align: -2px;
+    cursor: help;
+    transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+    text-transform: none;
+    letter-spacing: 0;
+    flex-shrink: 0;
+}
+.info-icon:hover,
+.info-icon:focus-visible,
+.info-icon:focus {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: rgba(92, 213, 255, 0.10);
+    outline: none;
+}
+
+/* In-flow tooltip block. Hidden by default; revealed when the row's info
+   icon is hovered or focused. Sits between the caption and the bar so it
+   can't be clipped — uses :has() so the icon stays inside the caption. */
+.info-tip {
+    display: none;
+    margin: 4px 0 2px;
+    padding: 10px 12px;
+    background: var(--panel);
+    color: var(--text-soft);
+    border: 1px solid var(--line-strong);
+    border-left: 3px solid var(--accent);
+    border-radius: 10px;
+    font-size: 11.5px;
+    font-weight: 400;
+    font-style: normal;
+    line-height: 1.5;
+    text-align: left;
+    text-transform: none;
+    letter-spacing: 0;
+    box-shadow: var(--shadow-md);
+    animation: info-tip-in 160ms ease-out;
+}
+@keyframes info-tip-in {
+    from { opacity: 0; transform: translateY(-2px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+.token-meter-row:has(.info-icon:hover) > .info-tip,
+.token-meter-row:has(.info-icon:focus) > .info-tip,
+.token-meter-row:has(.info-icon:focus-visible) > .info-tip {
+    display: block;
+}
+
+/* =========================================================================
+   Cost table — per-token-type breakdown with rate + extended cost.
+   Numeric columns are right-aligned and use tabular numerals so the rows
+   visually align even with mixed-width digits.
+   ========================================================================= */
+.cost-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 12px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+}
+.cost-table th, .cost-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+}
+.cost-table tr:last-child td { border-bottom: none; }
+.cost-table th {
+    text-align: left;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    background: var(--panel-glass);
+}
+.cost-table th.num, .cost-table td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+}
+.cost-table td.label {
+    color: var(--text-soft);
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
     gap: 8px;
 }
+.cost-table td.label i {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    display: inline-block;
+}
+.cost-table .swatch--input  { background: var(--accent); }
+.cost-table .swatch--output { background: var(--coral); }
+.cost-table .swatch--cache  { background: var(--muted); }
+.cost-table tfoot td {
+    background: var(--panel-glass);
+    color: var(--text);
+    font-weight: 600;
+}
+.cost-table tfoot td.num { color: var(--accent); }
+.cost-table .rate-col { color: var(--muted); font-size: 11px; }
+
 .token-meter-bar {
     display: flex;
     width: 100%;
@@ -861,13 +1013,17 @@ code, pre, .mono {
     border: 1px solid var(--line);
     box-shadow: 0 1px 0 rgba(255,255,255,0.03) inset;
 }
-.token-meter-seg {
+.token-meter-seg,
+.token-meter-fill {
     height: 100%;
-    transition: width 320ms ease;
+    transition: width 320ms ease, background 320ms ease;
 }
 .token-meter-seg--input  { background: linear-gradient(90deg, var(--accent-deep), var(--accent)); }
 .token-meter-seg--output { background: linear-gradient(90deg, var(--accent), var(--coral)); }
-.token-meter-seg--cache  { background: linear-gradient(90deg, var(--muted-2), var(--muted)); }
+.token-meter-fill--cache { background: linear-gradient(90deg, var(--muted-2), var(--muted)); }
+.token-meter-fill--cache.is-good {
+    background: linear-gradient(90deg, var(--accent-deep), var(--working));
+}
 
 .token-meter-legend {
     display: flex;
