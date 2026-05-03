@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 const TAG_KEY: &str = "_claude_monitor";
 const HOOK_EVENTS: &[&str] = &[
+    "UserPromptSubmit",
     "PreToolUse",
     "PostToolUse",
     "PostToolUseFailure",

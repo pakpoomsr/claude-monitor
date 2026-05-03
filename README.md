@@ -78,16 +78,18 @@ The dev command runs `cd frontend && trunk serve --port 1420` automatically (con
 
 There are **two signal sources** that converge on a single state machine in `AgentRegistry`:
 
-### 1. Real-time hooks (authoritative — opt-in)
+### 1. Real-time hooks (authoritative — auto-on)
 
-Open Settings → click **"Set up hooks"**. The app:
+Hooks register **automatically on every app launch** (the URL/port refreshes each time since the server binds to a random port). On first launch, the app:
 1. Backs up `~/.claude/settings.json` to `settings.json.bak` (only if no backup exists yet)
-2. Adds 10 hook entries (one per event) tagged with `_claude_monitor: true` so they can be removed cleanly. Each is `"type": "http"` pointing at `http://127.0.0.1:<random>/h` with an `X-Auth: <random>` header.
+2. Adds 11 hook entries (one per event) tagged with `_claude_monitor: true` so they can be removed cleanly. Each is `"type": "http"` pointing at `http://127.0.0.1:<random>/h` with an `X-Auth: <random>` header.
 3. Claude Code picks the changes up live — no restart.
+
+If you click **"Disable hooks"** in the Settings panel, the preference is persisted to `<data_local_dir>/claude-monitor/prefs.json` (`hooks_enabled: false`) and auto-register is skipped on subsequent launches. Click "Set up hooks" to re-enable.
 
 | Hook event | New status |
 |---|---|
-| `SessionStart` | Working (agent created) |
+| `SessionStart` / `UserPromptSubmit` | Working (new turn — clears Waiting from previous Stop) |
 | `PreToolUse` | Working (cancel waiting timers, push pending tool) |
 | `PostToolUse` / `PostToolUseFailure` | (turn continues, pop pending tool) |
 | `Stop` | Waiting (turn ended) |
@@ -159,7 +161,7 @@ Edit `src-tauri/src/agents.rs::estimate_cost` to adjust.
 
 ## Caveats
 
-- The hook HTTP server binds to a **random ephemeral port** on each app launch. After registering hooks, restarting the app means the hook entries in `settings.json` point to the now-closed port — re-click "Set up hooks" to refresh them (idempotent: replaces entries tagged `_claude_monitor: true`).
+- The hook HTTP server binds to a **random ephemeral port** on each app launch. The auto-register on launch refreshes the URL in `settings.json` so this is invisible — no manual action needed unless you've explicitly disabled hooks.
 - The `tauri.conf.json` setting `app.withGlobalTauri: true` is required so the WASM bridge can use `window.__TAURI__.event.listen` — don't remove it.
 - `beforeDevCommand` must run from `frontend/`, hence the `cd frontend &&` prefix — Tauri runs the command from the project root by default.
 - Hook entries are tagged `_claude_monitor: true`. If you edit `~/.claude/settings.json` manually, leave that key alone or unregister via the app first.

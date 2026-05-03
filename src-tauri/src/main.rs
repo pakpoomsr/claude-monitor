@@ -6,6 +6,7 @@ mod api;
 mod db;
 mod hooks;
 mod parser;
+mod prefs;
 mod settings_writer;
 mod watcher;
 
@@ -51,6 +52,7 @@ fn register_hooks(state: tauri::State<'_, AppState>) -> Result<HooksStatus, Stri
     let server = state.hook_server.read().clone();
     let server = server.ok_or("hook server not running")?;
     settings_writer::register(&server.url, &server.token)?;
+    prefs::save(&prefs::Prefs { hooks_enabled: true });
     Ok(HooksStatus {
         registered: true,
         url: server.url,
@@ -61,6 +63,7 @@ fn register_hooks(state: tauri::State<'_, AppState>) -> Result<HooksStatus, Stri
 #[tauri::command]
 fn unregister_hooks(state: tauri::State<'_, AppState>) -> Result<HooksStatus, String> {
     settings_writer::unregister()?;
+    prefs::save(&prefs::Prefs { hooks_enabled: false });
     let server = state.hook_server.read().clone();
     Ok(HooksStatus {
         registered: false,
@@ -172,14 +175,31 @@ fn main() {
 
             // Spawn the embedded hook HTTP server. Bind on app start so the
             // URL is stable for the duration of the run; port is ephemeral
-            // so users may need to re-register hooks across restarts.
+            // so we re-register hooks after each bind to keep the entries
+            // in ~/.claude/settings.json pointing at the live port.
             let app_handle = app.handle().clone();
             let registry_hooks = registry.clone();
             tauri::async_runtime::spawn(async move {
                 match hooks::spawn(app_handle.clone(), registry_hooks).await {
                     Ok(server) => {
                         if let Some(state) = app_handle.try_state::<AppState>() {
-                            *state.hook_server.write() = Some(server);
+                            *state.hook_server.write() = Some(server.clone());
+                        }
+                        // Auto-register hooks unless the user explicitly
+                        // disabled them in a previous run.
+                        let p = prefs::load();
+                        if p.hooks_enabled {
+                            match settings_writer::register(&server.url, &server.token) {
+                                Ok(_) => println!(
+                                    "[claude-monitor] auto-registered hooks at {}",
+                                    server.url
+                                ),
+                                Err(e) => eprintln!(
+                                    "[claude-monitor] auto-register failed: {e}"
+                                ),
+                            }
+                        } else {
+                            println!("[claude-monitor] hooks disabled by user prefs, skipping auto-register");
                         }
                     }
                     Err(e) => eprintln!("[claude-monitor] failed to start hook server: {e}"),

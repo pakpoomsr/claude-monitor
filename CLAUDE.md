@@ -23,7 +23,15 @@ cd src-tauri && cargo build         # backend only
 cd frontend  && trunk build         # frontend WASM only
 ```
 
-After a backend change, smoke-test with `timeout 25 cargo tauri dev --no-watch` from the project root — exit 143 (SIGTERM from timeout) is expected and fine; you're looking for the line `[claude-monitor] Watching: ...` and `[claude-monitor] hook server listening on http://127.0.0.1:<port>/h` to confirm both subsystems started.
+After a backend change, smoke-test with `timeout 25 cargo tauri dev --no-watch` from the project root — exit 143 (SIGTERM from timeout) is expected and fine; you're looking for these three lines to confirm subsystems started:
+
+```
+[claude-monitor] Watching: C:\Users\zicre\.claude\projects
+[claude-monitor] hook server listening on http://127.0.0.1:<port>/h
+[claude-monitor] auto-registered hooks at http://127.0.0.1:<port>/h
+```
+
+(The third line only fires when `prefs.json` has `hooks_enabled: true` — the default. If the user previously clicked "Disable hooks", you'll see `hooks disabled by user prefs, skipping auto-register` instead.)
 
 ## Module map
 
@@ -35,6 +43,7 @@ After a backend change, smoke-test with `timeout 25 cargo tauri dev --no-watch` 
 | `agents.rs` | **The heart.** `AgentRegistry`, `AgentSnapshot`, state machine (`apply_events`, `apply_hook`, `tick`, `compute_status`), `HookEvent`, cost estimation |
 | `hooks.rs` | Axum HTTP server bound to `127.0.0.1:0` (random ephemeral port). Single `POST /h` endpoint with `X-Auth` header. Translates incoming JSON → `HookEvent` → `apply_hook` |
 | `settings_writer.rs` | Reads/registers/unregisters our hook entries in `~/.claude/settings.json`. Tag `_claude_monitor: true` on every entry we own; backup to `.bak` on first write; atomic via `.tmp` rename |
+| `prefs.rs` | Persistent app prefs at `<data_local_dir>/claude-monitor/prefs.json`. Currently just `hooks_enabled: bool` (default true). Drives the auto-register decision on launch |
 | `watcher.rs` | `notify`-based JSONL watcher. Tracks per-file byte offset for incremental reads. Detects sub-agent paths (`<parent>/subagents/agent-X.jsonl`) and passes `parent_id` to `apply_events` |
 | `parser.rs` | Line → `Vec<ClaudeEvent>`. Handles `system/turn_duration`, content blocks (text/tool_use/tool_result), `usage`, etc. |
 | `db.rs` | SQLite (rusqlite, bundled) — only used for the Usage tab's history (token totals per session). Live state lives in memory. |

@@ -178,6 +178,20 @@ impl AgentRegistry {
             last_hook_at: None,
         });
 
+        // Hook authority: if a hook event has fired for this agent within
+        // the grace window, treat hooks as ground truth and skip JSONL
+        // writes to status-driving fields. We still update tokens / cost /
+        // preview / model / project — those are useful regardless of which
+        // signal source is "owning" the status.
+        let now = Utc::now();
+        let hooks_authoritative = match agent.last_hook_at {
+            Some(t) => {
+                let elapsed = now.signed_duration_since(t).num_seconds().max(0) as u64;
+                elapsed < settings.hook_grace_secs
+            }
+            None => false,
+        };
+
         for ev in events {
             match ev {
                 ClaudeEvent::SessionStart { project, .. } => {
@@ -197,57 +211,60 @@ impl AgentRegistry {
                 ClaudeEvent::AssistantText { text } => {
                     let trimmed: String = text.chars().take(preview_chars).collect();
                     agent.snapshot.current_message = trimmed;
-                    agent.awaiting_user = false;
-                    // Arm the text-idle timer only on tool-free turns.
-                    // If a tool was used this turn, the turn isn't over yet —
-                    // we wait for tool_results / TurnEnd instead.
-                    if !agent.had_tool_in_turn {
-                        agent.text_idle_deadline = Some(at + text_idle);
+                    if !hooks_authoritative {
+                        agent.awaiting_user = false;
+                        // Arm the text-idle timer only on tool-free turns.
+                        if !agent.had_tool_in_turn {
+                            agent.text_idle_deadline = Some(at + text_idle);
+                        }
                     }
                 }
                 ClaudeEvent::ToolUseStart { tool, id } => {
-                    agent.had_tool_in_turn = true;
-                    agent.text_idle_deadline = None;
-                    agent.awaiting_user = false;
-                    agent.pending_tools.insert(
-                        id.clone(),
-                        PendingTool {
-                            name: tool.clone(),
-                            started_at: at,
-                            flagged_permission: false,
-                        },
-                    );
+                    if !hooks_authoritative {
+                        agent.had_tool_in_turn = true;
+                        agent.text_idle_deadline = None;
+                        agent.awaiting_user = false;
+                        agent.pending_tools.insert(
+                            id.clone(),
+                            PendingTool {
+                                name: tool.clone(),
+                                started_at: at,
+                                flagged_permission: false,
+                            },
+                        );
+                    }
                     agent.snapshot.current_tool = Some(tool.clone());
                 }
                 ClaudeEvent::ToolUseEnd { id } => {
-                    agent.pending_tools.remove(id);
-                    if agent.pending_tools.is_empty() {
-                        agent.snapshot.current_tool = None;
-                    } else if let Some(t) = agent.pending_tools.values().next() {
-                        agent.snapshot.current_tool = Some(t.name.clone());
+                    if !hooks_authoritative {
+                        agent.pending_tools.remove(id);
+                        if agent.pending_tools.is_empty() {
+                            agent.snapshot.current_tool = None;
+                        } else if let Some(t) = agent.pending_tools.values().next() {
+                            agent.snapshot.current_tool = Some(t.name.clone());
+                        }
                     }
-                    // Tool finished but turn isn't necessarily over —
-                    // assistant may emit more text or call more tools.
-                    // Don't flip state here; wait for TurnEnd or text-idle.
                 }
                 ClaudeEvent::TurnEnd => {
-                    // Definitive end-of-turn marker from Claude Code.
-                    agent.had_tool_in_turn = false;
-                    agent.text_idle_deadline = None;
-                    agent.awaiting_user = true;
+                    if !hooks_authoritative {
+                        agent.had_tool_in_turn = false;
+                        agent.text_idle_deadline = None;
+                        agent.awaiting_user = true;
+                    }
                 }
                 ClaudeEvent::UserMessage => {
-                    // User just typed — new turn starting, agent is working.
-                    agent.had_tool_in_turn = false;
-                    agent.text_idle_deadline = None;
-                    agent.awaiting_user = false;
+                    if !hooks_authoritative {
+                        agent.had_tool_in_turn = false;
+                        agent.text_idle_deadline = None;
+                        agent.awaiting_user = false;
+                    }
                 }
                 ClaudeEvent::Unknown => {}
             }
         }
 
         agent.snapshot.last_activity = at;
-        agent.snapshot.status = compute_status(agent, &settings, Utc::now());
+        agent.snapshot.status = compute_status(agent, &settings, now);
 
         Some(agent.snapshot.clone())
     }
@@ -306,7 +323,12 @@ impl AgentRegistry {
         }
 
         match ev.hook_event_name.as_str() {
-            "SessionStart" => {
+            "SessionStart" | "UserPromptSubmit" => {
+                // Either the session just started OR the user just submitted
+                // a new prompt. Either way: a new turn is beginning, agent
+                // is Working again. UserPromptSubmit is the critical signal
+                // that bridges Stop → next-turn-Working when the response
+                // doesn't include any tool calls (text-only responses).
                 agent.had_tool_in_turn = false;
                 agent.text_idle_deadline = None;
                 agent.awaiting_user = false;
@@ -360,14 +382,20 @@ impl AgentRegistry {
                 agent.text_idle_deadline = None;
                 agent.awaiting_user = false;
             }
-            "SubagentStop" | "SessionEnd" => {
-                // Let the idle timeout naturally pull this to Idle, OR we
-                // could mark `last_activity = epoch` to flip immediately.
-                // For SessionEnd we want immediate Idle.
-                if ev.hook_event_name == "SessionEnd" {
-                    agent.snapshot.last_activity = now
-                        - chrono::Duration::seconds(settings.idle_timeout_secs as i64 + 1);
-                }
+            "SubagentStop" => {
+                // Let the idle timeout naturally pull the sub to Idle.
+            }
+            "SessionEnd" => {
+                // Force immediate Idle by backdating last_activity.
+                agent.snapshot.last_activity = now
+                    - chrono::Duration::seconds(settings.idle_timeout_secs as i64 + 1);
+                agent.last_hook_at = Some(now);
+                agent.snapshot.status = compute_status(agent, &settings, now);
+                eprintln!(
+                    "[claude-monitor] hook SessionEnd session={} → {:?}",
+                    target_id, agent.snapshot.status
+                );
+                return Some(agent.snapshot.clone());
             }
             _ => {}
         }
@@ -384,6 +412,14 @@ impl AgentRegistry {
         agent.snapshot.last_activity = agent.snapshot.last_activity.max(now);
         agent.last_hook_at = Some(now);
         agent.snapshot.status = compute_status(agent, &settings, now);
+
+        eprintln!(
+            "[claude-monitor] hook {} session={} tool={:?} → {:?}",
+            ev.hook_event_name,
+            short_id(&target_id),
+            ev.tool_name.as_deref().unwrap_or("-"),
+            agent.snapshot.status
+        );
 
         Some(agent.snapshot.clone())
     }
@@ -517,6 +553,11 @@ pub struct HookEvent {
     pub notification_type: Option<String>,
     /// Optional preview text some events may include.
     pub last_assistant_text: Option<String>,
+}
+
+fn short_id(id: &str) -> String {
+    let n = id.len().min(8);
+    id[..n].to_string()
 }
 
 /// Estimate cost based on Anthropic pricing (per million tokens).
