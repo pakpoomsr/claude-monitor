@@ -2,7 +2,9 @@
 //! wants hooks auto-registered on launch. Lives at
 //! `<data_local_dir>/claude-monitor/prefs.json`.
 
+use crate::pricing::ModelPricing;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -10,11 +12,34 @@ use std::path::PathBuf;
 #[serde(default)]
 pub struct Prefs {
     pub hooks_enabled: bool,
+    /// Per-model price overrides, keyed by `PricingEntry.id` (e.g.
+    /// "claude-opus-4-7"). Missing keys mean "use the compiled default".
+    pub pricing_overrides: HashMap<String, ModelPricing>,
+    /// ISO 4217 code of the currency to display costs in. USD = no
+    /// conversion. Conversion rates are fetched separately and cached
+    /// under `currency_cache`.
+    pub pricing_currency: String,
+    /// Cached FX rates from Frankfurter; refreshed at most daily.
+    pub currency_cache: Option<CurrencyCache>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CurrencyCache {
+    /// Map of currency code → units of that currency per 1 USD.
+    pub rates: HashMap<String, f64>,
+    /// RFC3339 timestamp of the fetch.
+    pub fetched_at: String,
+    pub source: String,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { hooks_enabled: true }
+        Self {
+            hooks_enabled: true,
+            pricing_overrides: HashMap::new(),
+            pricing_currency: "USD".to_string(),
+            currency_cache: None,
+        }
     }
 }
 
@@ -47,8 +72,22 @@ pub fn save(p: &Prefs) {
         Ok(body) => {
             if let Err(e) = fs::write(&path, body) {
                 eprintln!("[claude-monitor] prefs: write failed: {e}");
+                return;
             }
+            restrict_to_owner(&path);
         }
         Err(e) => eprintln!("[claude-monitor] prefs: serialize failed: {e}"),
+    }
+}
+
+fn restrict_to_owner(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
     }
 }

@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 
-use crate::types::{avatar_for, avatar_url, project_label, short_id, AgentSnapshot};
+use crate::types::{avatar_for, avatar_url, format_money, project_label, short_id, AgentSnapshot, CurrencyState, ModelPricing, PricingTable};
 
 #[component]
 pub fn AgentDetail(
@@ -73,7 +73,9 @@ pub fn AgentDetail(
                                 <CostTable
                                     input=s.input_tokens
                                     output=s.output_tokens
-                                    cache=s.cache_tokens
+                                    cache_write_5m=s.cache_write_5m_tokens
+                                    cache_write_1h=s.cache_write_1h_tokens
+                                    cache_read=s.cache_read_tokens
                                     model=s.model.clone()
                                 />
                                 <div class="kv-grid">
@@ -165,81 +167,108 @@ fn CacheMeter(input: u64, cache: u64) -> impl IntoView {
     }
 }
 
-/// Per-million-token pricing in USD. Mirrors the backend's
-/// `agents::estimate_cost` exactly so per-row costs sum to `cost_usd`.
-fn model_pricing(model: &str) -> (f64, f64, f64) {
-    let m = model.to_lowercase();
-    if m.contains("opus") {
-        (15.0, 75.0, 1.875)
-    } else if m.contains("sonnet") {
-        (3.0, 15.0, 0.375)
+fn format_rate(rate_per_m_usd: f64, currency: &CurrencyState) -> String {
+    let (symbol, fx) = currency.active_rate();
+    let v = rate_per_m_usd * fx;
+    if v < 1.0 {
+        format!("{symbol}{v:.3}/M")
     } else {
-        (0.80, 4.0, 0.10)
+        format!("{symbol}{v:.2}/M")
     }
-}
-
-fn format_rate(rate_per_m: f64) -> String {
-    if rate_per_m < 1.0 {
-        format!("${:.3}/M", rate_per_m)
-    } else {
-        format!("${:.2}/M", rate_per_m)
-    }
-}
-
-fn format_cost(cost: f64) -> String {
-    if cost >= 1.0       { format!("${:.2}", cost) }
-    else if cost >= 0.01 { format!("${:.3}", cost) }
-    else                 { format!("${:.4}", cost) }
 }
 
 #[component]
-fn CostTable(input: u64, output: u64, cache: u64, model: String) -> impl IntoView {
-    let (rin, rout, rcache) = model_pricing(&model);
-    let m = 1_000_000.0;
-    let cin    = (input as f64  / m) * rin;
-    let cout   = (output as f64 / m) * rout;
-    let ccache = (cache as f64  / m) * rcache;
-    let total  = cin + cout + ccache;
+fn CostTable(
+    input: u64,
+    output: u64,
+    cache_write_5m: u64,
+    cache_write_1h: u64,
+    cache_read: u64,
+    model: String,
+) -> impl IntoView {
+    // Read live pricing + currency from context.
+    let pricing_sig = use_context::<RwSignal<PricingTable>>();
+    let currency_sig = use_context::<RwSignal<CurrencyState>>();
+    let model = StoredValue::new(model);
+
+    let row = move || -> (ModelPricing, u64, CurrencyState) {
+        let p = pricing_sig
+            .map(|s| s.get().pricing_for(&model.get_value()))
+            .unwrap_or(ModelPricing {
+                base_input: 3.0,
+                cache_write_5m: 3.75,
+                cache_write_1h: 6.0,
+                cache_read: 0.30,
+                output: 15.0,
+            });
+        let cur = currency_sig.map(|s| s.get()).unwrap_or_default();
+        let total_tokens = input + cache_write_5m + cache_write_1h + cache_read + output;
+        (p, total_tokens, cur)
+    };
 
     view! {
-        <table class="cost-table">
-            <thead>
-                <tr>
-                    <th>"Type"</th>
-                    <th class="num">"Tokens"</th>
-                    <th class="num">"Rate"</th>
-                    <th class="num">"Cost"</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td class="label"><i class="swatch--input" />"Input"</td>
-                    <td class="num">{format_num(input)}</td>
-                    <td class="num rate-col">{format_rate(rin)}</td>
-                    <td class="num">{format_cost(cin)}</td>
-                </tr>
-                <tr>
-                    <td class="label"><i class="swatch--output" />"Output"</td>
-                    <td class="num">{format_num(output)}</td>
-                    <td class="num rate-col">{format_rate(rout)}</td>
-                    <td class="num">{format_cost(cout)}</td>
-                </tr>
-                <tr>
-                    <td class="label"><i class="swatch--cache" />"Cache"</td>
-                    <td class="num">{format_num(cache)}</td>
-                    <td class="num rate-col">{format_rate(rcache)}</td>
-                    <td class="num">{format_cost(ccache)}</td>
-                </tr>
-            </tbody>
-            <tfoot>
-                <tr>
-                    <td>"Total"</td>
-                    <td class="num">{format_num(input + output + cache)}</td>
-                    <td class="num"></td>
-                    <td class="num">{format_cost(total)}</td>
-                </tr>
-            </tfoot>
-        </table>
+        {move || {
+            let (p, total_tokens, cur) = row();
+            let m = 1_000_000.0;
+            let c_in   = (input as f64           / m) * p.base_input;
+            let c_5m   = (cache_write_5m as f64  / m) * p.cache_write_5m;
+            let c_1h   = (cache_write_1h as f64  / m) * p.cache_write_1h;
+            let c_hit  = (cache_read as f64      / m) * p.cache_read;
+            let c_out  = (output as f64          / m) * p.output;
+            let total  = c_in + c_5m + c_1h + c_hit + c_out;
+            view! {
+                <table class="cost-table">
+                    <thead>
+                        <tr>
+                            <th>"Type"</th>
+                            <th class="num">"Tokens"</th>
+                            <th class="num">"Rate"</th>
+                            <th class="num">"Cost"</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td class="label"><i class="swatch--input" />"Base Input"</td>
+                            <td class="num">{format_num(input)}</td>
+                            <td class="num rate-col">{format_rate(p.base_input, &cur)}</td>
+                            <td class="num">{format_money(c_in, &cur)}</td>
+                        </tr>
+                        <tr>
+                            <td class="label"><i class="swatch--cache" />"5m Cache Writes"</td>
+                            <td class="num">{format_num(cache_write_5m)}</td>
+                            <td class="num rate-col">{format_rate(p.cache_write_5m, &cur)}</td>
+                            <td class="num">{format_money(c_5m, &cur)}</td>
+                        </tr>
+                        <tr>
+                            <td class="label"><i class="swatch--cache" />"1h Cache Writes"</td>
+                            <td class="num">{format_num(cache_write_1h)}</td>
+                            <td class="num rate-col">{format_rate(p.cache_write_1h, &cur)}</td>
+                            <td class="num">{format_money(c_1h, &cur)}</td>
+                        </tr>
+                        <tr>
+                            <td class="label"><i class="swatch--cache" />"Cache Hits & Refresh"</td>
+                            <td class="num">{format_num(cache_read)}</td>
+                            <td class="num rate-col">{format_rate(p.cache_read, &cur)}</td>
+                            <td class="num">{format_money(c_hit, &cur)}</td>
+                        </tr>
+                        <tr>
+                            <td class="label"><i class="swatch--output" />"Output"</td>
+                            <td class="num">{format_num(output)}</td>
+                            <td class="num rate-col">{format_rate(p.output, &cur)}</td>
+                            <td class="num">{format_money(c_out, &cur)}</td>
+                        </tr>
+                    </tbody>
+                    <tfoot>
+                        <tr>
+                            <td>"Total"</td>
+                            <td class="num">{format_num(total_tokens)}</td>
+                            <td class="num"></td>
+                            <td class="num">{format_money(total, &cur)}</td>
+                        </tr>
+                    </tfoot>
+                </table>
+            }
+        }}
     }
 }
 

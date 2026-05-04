@@ -97,7 +97,36 @@ fn detect_parent_id(path: &Path) -> Option<String> {
     if parent_dir.file_name()?.to_str()? != "subagents" {
         return None;
     }
-    parent_dir.parent()?.file_name()?.to_str().map(String::from)
+    let candidate = parent_dir.parent()?.file_name()?.to_str()?;
+    // Only accept UUID-shaped parents — prevents a crafted JSONL placed under
+    // `<projects>/<arbitrary>/subagents/` from claiming an attacker-chosen
+    // parent_id and corrupting the agent grouping in the UI.
+    if is_uuid_like(candidate) {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
+}
+
+/// 8-4-4-4-12 hex with dashes, case-insensitive. Doesn't validate version
+/// nibble — Claude Code session UUIDs are RFC 4122 v4 in practice but we
+/// don't want to reject any legit format change.
+fn is_uuid_like(s: &str) -> bool {
+    if s.len() != 36 {
+        return false;
+    }
+    let bytes = s.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        let expect_dash = matches!(i, 8 | 13 | 18 | 23);
+        if expect_dash {
+            if *b != b'-' {
+                return false;
+            }
+        } else if !b.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
 }
 
 async fn process_file_update(
@@ -128,11 +157,33 @@ async fn process_file_update(
     let mut reader = BufReader::new(&file);
     let mut all_events = Vec::new();
 
-    for line in reader.by_ref().lines().map_while(Result::ok) {
+    // Cap per-line read at 8 MB. Real Claude transcript lines are at most a
+    // few hundred KB; anything larger is corruption or a malicious file
+    // dropped under ~/.claude/projects to OOM the watcher.
+    const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
+    loop {
+        let mut buf = Vec::new();
+        let n = match (&mut reader).take(MAX_LINE_BYTES as u64 + 1).read_until(b'\n', &mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if n > MAX_LINE_BYTES {
+            eprintln!(
+                "[claude-monitor] skipping oversized JSONL line ({n} bytes) in {}",
+                path.display()
+            );
+            // Drain to next newline so we resync on subsequent lines.
+            let mut sink = Vec::new();
+            let _ = (&mut reader).take(64 * 1024 * 1024).read_until(b'\n', &mut sink);
+            continue;
+        }
+        let Ok(line) = std::str::from_utf8(&buf) else { continue };
+        let line = line.trim_end_matches('\n').trim_end_matches('\r');
         if line.trim().is_empty() {
             continue;
         }
-        all_events.extend(parse_jsonl_line(&line));
+        all_events.extend(parse_jsonl_line(line));
     }
 
     state.offset = file.stream_position().unwrap_or(state.offset);
@@ -160,6 +211,9 @@ async fn process_file_update(
                 input_tokens: snap.input_tokens,
                 output_tokens: snap.output_tokens,
                 cache_tokens: snap.cache_tokens,
+                cache_write_5m_tokens: snap.cache_write_5m_tokens,
+                cache_write_1h_tokens: snap.cache_write_1h_tokens,
+                cache_read_tokens: snap.cache_read_tokens,
                 cost_usd: snap.cost_usd,
                 started_at: snap.started_at.to_rfc3339(),
                 updated_at: snap.last_activity.to_rfc3339(),

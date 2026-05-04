@@ -1,3 +1,4 @@
+use crate::pricing::TokenUsage;
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -7,9 +8,7 @@ pub enum ClaudeEvent {
         project: String,
     },
     Usage {
-        input: u64,
-        output: u64,
-        cache: u64,
+        usage: TokenUsage,
         model: String,
     },
     AssistantText {
@@ -69,13 +68,37 @@ pub fn parse_jsonl_line(line: &str) -> Vec<ClaudeEvent> {
 
         "assistant" => {
             if let Some(message) = val.get("message") {
-                if let Some(usage) = message.get("usage") {
-                    let input = u64_field(usage, "input_tokens");
-                    let output = u64_field(usage, "output_tokens");
-                    let cache = u64_field(usage, "cache_read_input_tokens");
+                if let Some(usage_v) = message.get("usage") {
+                    // Anthropic exposes cache writes either as a flat
+                    // `cache_creation_input_tokens` (treated as 5m bucket
+                    // by default) or as a nested `cache_creation` object
+                    // with `ephemeral_5m_input_tokens` and
+                    // `ephemeral_1h_input_tokens`. Prefer the nested form
+                    // when present so we charge the right rate.
+                    let mut cache_write_5m = 0u64;
+                    let mut cache_write_1h = 0u64;
+                    if let Some(cc) = usage_v.get("cache_creation") {
+                        cache_write_5m = u64_field(cc, "ephemeral_5m_input_tokens");
+                        cache_write_1h = u64_field(cc, "ephemeral_1h_input_tokens");
+                    }
+                    if cache_write_5m == 0 && cache_write_1h == 0 {
+                        cache_write_5m = u64_field(usage_v, "cache_creation_input_tokens");
+                    }
+                    let usage = TokenUsage {
+                        input: u64_field(usage_v, "input_tokens"),
+                        output: u64_field(usage_v, "output_tokens"),
+                        cache_read: u64_field(usage_v, "cache_read_input_tokens"),
+                        cache_write_5m,
+                        cache_write_1h,
+                    };
                     let model = string_field(message, "model");
-                    if input > 0 || output > 0 || cache > 0 {
-                        out.push(ClaudeEvent::Usage { input, output, cache, model });
+                    if usage.input > 0
+                        || usage.output > 0
+                        || usage.cache_read > 0
+                        || usage.cache_write_5m > 0
+                        || usage.cache_write_1h > 0
+                    {
+                        out.push(ClaudeEvent::Usage { usage, model });
                     }
                 }
 

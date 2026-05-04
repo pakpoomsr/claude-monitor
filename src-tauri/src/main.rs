@@ -3,10 +3,12 @@
 
 mod agents;
 mod api;
+mod currency;
 mod db;
 mod hooks;
 mod parser;
 mod prefs;
+mod pricing;
 mod settings_writer;
 mod watcher;
 
@@ -19,6 +21,7 @@ use tauri::{
 use tokio::sync::Mutex;
 
 use crate::agents::{AgentRegistry, AgentSettings, AgentSnapshot};
+use crate::pricing::PricingTable;
 
 pub struct AppState {
     pub db: Arc<Mutex<db::Database>>,
@@ -52,7 +55,9 @@ fn register_hooks(state: tauri::State<'_, AppState>) -> Result<HooksStatus, Stri
     let server = state.hook_server.read().clone();
     let server = server.ok_or("hook server not running")?;
     settings_writer::register(&server.url, &server.token)?;
-    prefs::save(&prefs::Prefs { hooks_enabled: true });
+    let mut p = prefs::load();
+    p.hooks_enabled = true;
+    prefs::save(&p);
     Ok(HooksStatus {
         registered: true,
         url: server.url,
@@ -63,7 +68,9 @@ fn register_hooks(state: tauri::State<'_, AppState>) -> Result<HooksStatus, Stri
 #[tauri::command]
 fn unregister_hooks(state: tauri::State<'_, AppState>) -> Result<HooksStatus, String> {
     settings_writer::unregister()?;
-    prefs::save(&prefs::Prefs { hooks_enabled: false });
+    let mut p = prefs::load();
+    p.hooks_enabled = false;
+    prefs::save(&p);
     let server = state.hook_server.read().clone();
     Ok(HooksStatus {
         registered: false,
@@ -100,6 +107,89 @@ async fn set_agent_settings(
 }
 
 #[tauri::command]
+async fn get_pricing(state: tauri::State<'_, AppState>) -> Result<PricingTable, String> {
+    Ok(state.registry.pricing())
+}
+
+#[tauri::command]
+async fn set_pricing(
+    table: PricingTable,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    // Persist the per-id overrides (delta from defaults), then apply to the
+    // live registry so future Usage events are costed at the new rates.
+    let defaults = pricing::default_pricing_table();
+    let mut overrides = std::collections::HashMap::new();
+    for entry in &table.entries {
+        if let Some(default_entry) = defaults.entries.iter().find(|d| d.id == entry.id) {
+            if entry.pricing != default_entry.pricing {
+                overrides.insert(entry.id.clone(), entry.pricing);
+            }
+        }
+    }
+    let mut p = prefs::load();
+    p.pricing_overrides = overrides;
+    prefs::save(&p);
+    state.registry.update_pricing(table);
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct CurrencyState {
+    pub active: String,
+    pub list: Vec<currency::CurrencyInfo>,
+    pub fetched_at: Option<String>,
+}
+
+#[tauri::command]
+async fn get_currency_state() -> Result<CurrencyState, String> {
+    let p = prefs::load();
+    let cache = p.currency_cache.as_ref();
+    Ok(CurrencyState {
+        active: p.pricing_currency.clone(),
+        list: currency::currency_list(cache),
+        fetched_at: cache.map(|c| c.fetched_at.clone()),
+    })
+}
+
+#[tauri::command]
+async fn set_active_currency(code: String) -> Result<(), String> {
+    if !currency::SUPPORTED.iter().any(|(c, _)| *c == code.as_str()) {
+        return Err(format!("unsupported currency: {}", code));
+    }
+    let mut p = prefs::load();
+    p.pricing_currency = code;
+    prefs::save(&p);
+    Ok(())
+}
+
+#[tauri::command]
+async fn refresh_currency_rates() -> Result<CurrencyState, String> {
+    let cache = currency::fetch_rates().await?;
+    let mut p = prefs::load();
+    p.currency_cache = Some(cache.clone());
+    prefs::save(&p);
+    Ok(CurrencyState {
+        active: p.pricing_currency.clone(),
+        list: currency::currency_list(Some(&cache)),
+        fetched_at: Some(cache.fetched_at),
+    })
+}
+
+#[tauri::command]
+async fn reset_pricing(state: tauri::State<'_, AppState>) -> Result<PricingTable, String> {
+    // Clear pricing overrides AND reset currency back to USD — wipe both
+    // the rate edits and any non-default display currency in one shot.
+    let mut p = prefs::load();
+    p.pricing_overrides.clear();
+    p.pricing_currency = "USD".to_string();
+    prefs::save(&p);
+    let table = pricing::default_pricing_table();
+    state.registry.update_pricing(table.clone());
+    Ok(table)
+}
+
+#[tauri::command]
 async fn get_daily_summary(
     state: tauri::State<'_, AppState>,
 ) -> Result<db::DailySummary, String> {
@@ -122,6 +212,17 @@ async fn get_weekly_chart(
 ) -> Result<Vec<db::DayStats>, String> {
     let db = state.db.lock().await;
     db.get_weekly_stats().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_usage_range(
+    start_date: String,
+    end_date: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<db::DayStats>, String> {
+    let db = state.db.lock().await;
+    db.get_usage_range(&start_date, &end_date)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -149,10 +250,20 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let db = db::Database::new().expect("Failed to init DB");
             let db = Arc::new(Mutex::new(db));
             let registry = Arc::new(AgentRegistry::new());
+
+            // Apply persisted pricing overrides on startup so the live
+            // registry uses the user's edited rates from the first event.
+            let p = prefs::load();
+            let merged = pricing::merge_overrides(
+                pricing::default_pricing_table(),
+                &p.pricing_overrides,
+            );
+            registry.update_pricing(merged);
 
             let state = AppState {
                 db: db.clone(),
@@ -171,6 +282,27 @@ fn main() {
             let registry_watcher = registry.clone();
             tauri::async_runtime::spawn(async move {
                 watcher::start_watcher(app_handle, db_watcher, registry_watcher).await;
+            });
+
+            // Refresh currency rates non-blockingly if the cache is missing
+            // or older than 24h. Failures are silent — UI falls back to USD.
+            tauri::async_runtime::spawn(async move {
+                let p = prefs::load();
+                let needs_refresh = match &p.currency_cache {
+                    None => true,
+                    Some(c) => currency::is_stale(c),
+                };
+                if needs_refresh {
+                    match currency::fetch_rates().await {
+                        Ok(cache) => {
+                            let mut p = prefs::load();
+                            p.currency_cache = Some(cache);
+                            prefs::save(&p);
+                            println!("[claude-monitor] currency rates refreshed");
+                        }
+                        Err(e) => eprintln!("[claude-monitor] currency refresh failed: {e}"),
+                    }
+                }
             });
 
             // Spawn the embedded hook HTTP server. Bind on app start so the
@@ -254,11 +386,18 @@ fn main() {
             get_daily_summary,
             get_sessions,
             get_weekly_chart,
+            get_usage_range,
             set_api_key,
             fetch_api_usage,
             hooks_status,
             register_hooks,
             unregister_hooks,
+            get_pricing,
+            set_pricing,
+            reset_pricing,
+            get_currency_state,
+            set_active_currency,
+            refresh_currency_rates,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

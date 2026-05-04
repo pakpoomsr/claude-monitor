@@ -1299,3 +1299,208 @@ code, pre, .mono {
     from { transform: translateY(20px); opacity: 0; }
     to   { transform: translateY(0);    opacity: 1; }
 }
+
+/* ── Pricing settings table ───────────────────────────────────────── */
+.pricing-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    margin-top: 4px;
+}
+.pricing-table th, .pricing-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: middle;
+}
+.pricing-table th {
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 10px;
+    color: var(--muted);
+    text-align: left;
+}
+.pricing-table th.num, .pricing-table td.num { text-align: right; }
+.pricing-table td.label { white-space: nowrap; }
+.pricing-table tr.row-deprecated { opacity: 0.6; }
+.pricing-table tr:hover { background: var(--panel-glass); }
+.badge--muted {
+    color: var(--muted);
+    border-color: var(--line);
+    background: var(--panel-2);
+    font-size: 9px;
+    padding: 2px 7px;
+}
+.badge--muted::before { display: none; }
+
+.price-input {
+    width: 88px;
+    padding: 4px 8px;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 12px;
+    text-align: right;
+}
+.price-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(92, 213, 255, 0.15);
+}
+
+.currency-select {
+    padding: 6px 10px;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 12px;
+    min-width: 220px;
+}
+.currency-select:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(92, 213, 255, 0.15);
+}
+
+/* ── Sponsor tab ──────────────────────────────────────────────────── */
+.sponsor-panel {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 32px 24px;
+}
+.sponsor-hero {
+    text-align: center;
+    margin-bottom: 28px;
+}
+.sponsor-hero h2 {
+    font-size: 22px;
+    margin: 0 0 12px 0;
+}
+.sponsor-pitch {
+    color: var(--text-soft);
+    line-height: 1.55;
+    max-width: 540px;
+    margin: 0 auto;
+}
+.sponsor-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 24px;
+}
+.sponsor-btn {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 16px 20px;
+    text-align: left;
+    border-radius: 12px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: transform 0.12s ease, background 0.12s ease;
+}
+.sponsor-btn:hover {
+    transform: translateY(-1px);
+}
+.sponsor-btn > span:last-child {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.sponsor-btn strong { font-size: 14px; }
+.sponsor-btn small { font-size: 11px; }
+.sponsor-btn-icon {
+    font-size: 22px;
+    width: 36px;
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--panel-2);
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.sponsor-footer {
+    display: block;
+    text-align: center;
+    margin-top: 12px;
+    font-size: 11px;
+}
+
+/* ── Sponsor heart accent ────────────────────────────────────────── */
+.sponsor-btn-icon--heart {
+    color: #ff4d8d;
+    background: rgba(255, 77, 141, 0.12);
+    text-shadow: 0 0 10px rgba(255, 77, 141, 0.55);
+}
+
+/* ── Usage tab: range controls + chart label upgrades ─────────────── */
+.usage-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+.range-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.range-pills { display: flex; gap: 6px; }
+.range-dates {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.range-dates.hidden { display: none; }
+.date-input {
+    padding: 5px 8px;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 12px;
+    color-scheme: dark;
+}
+[data-theme="light"] .date-input { color-scheme: light; }
+.date-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(92, 213, 255, 0.15);
+}
+
+/* Bar chart: always-visible value above bar, full date below.
+ * Min column width keeps labels readable; chart scrolls horizontally
+ * for the 30-day or wide custom ranges. */
+.chart {
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+.bar-chart {
+    min-height: 180px;
+    padding: 6px 0 0;
+}
+.bar-col {
+    min-width: 56px;
+}
+.bar-value {
+    font-size: 10px;
+    color: var(--text-soft);
+    margin-bottom: 4px;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+.bar-label {
+    margin-top: 6px;
+    font-size: 10px;
+    color: var(--muted);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}

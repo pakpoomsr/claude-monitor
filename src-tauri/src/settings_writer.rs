@@ -4,6 +4,7 @@
 
 use serde_json::{json, Map, Value};
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 
 const TAG_KEY: &str = "_claude_monitor";
@@ -80,9 +81,18 @@ pub fn register(url: &str, token: &str) -> Result<(), String> {
     let mut settings = read()?;
     let original = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
 
-    // Backup before first write (don't overwrite user-edited backups).
-    if path.exists() && !bak.exists() {
-        fs::write(&bak, &original).map_err(|e| e.to_string())?;
+    // Backup before first write. Use create_new so a pre-existing symlink at
+    // the backup path can't trick us into writing user settings to an arbitrary
+    // file. If the backup exists already (race or earlier run), leave it alone.
+    if path.exists() {
+        match fs::OpenOptions::new().write(true).create_new(true).open(&bak) {
+            Ok(mut f) => {
+                f.write_all(original.as_bytes()).map_err(|e| e.to_string())?;
+                set_owner_only(&bak);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e.to_string()),
+        }
     }
 
     let entry = json!({
@@ -164,7 +174,37 @@ pub fn unregister() -> Result<(), String> {
 fn write_atomic(path: &std::path::Path, value: &Value) -> Result<(), String> {
     let tmp = path.with_extension("json.tmp");
     let body = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    fs::write(&tmp, body).map_err(|e| e.to_string())?;
+
+    // create_new prevents following a pre-existing symlink at the tmp path —
+    // without this, a malicious local process could redirect our write to an
+    // arbitrary file. If a stale tmp exists (crash mid-write), remove it first.
+    if tmp.exists() {
+        let _ = fs::remove_file(&tmp);
+    }
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .map_err(|e| e.to_string())?;
+    f.write_all(body.as_bytes()).map_err(|e| e.to_string())?;
+    f.sync_all().map_err(|e| e.to_string())?;
+    drop(f);
+
+    set_owner_only(&tmp);
     fs::rename(&tmp, path).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// On Unix, restrict the file to owner-only (0600). No-op on Windows where
+/// per-user data dirs already have appropriate ACLs by default.
+fn set_owner_only(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path; // unused on non-unix
+    }
 }

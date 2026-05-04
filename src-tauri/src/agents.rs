@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::time;
 
 use crate::parser::ClaudeEvent;
+use crate::pricing::{self, PricingTable};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -33,6 +34,11 @@ pub struct AgentSnapshot {
     pub model: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub cache_write_5m_tokens: u64,
+    pub cache_write_1h_tokens: u64,
+    pub cache_read_tokens: u64,
+    /// Legacy total = sum of the three cache columns. Kept for any consumer
+    /// that still wants a single "cache" number (e.g. older UI cells).
     pub cache_tokens: u64,
     pub cost_usd: f64,
     pub last_activity: DateTime<Utc>,
@@ -105,6 +111,7 @@ struct AgentInner {
 pub struct AgentRegistry {
     agents: RwLock<HashMap<String, AgentInner>>,
     settings: RwLock<AgentSettings>,
+    pricing: RwLock<PricingTable>,
 }
 
 impl Default for AgentRegistry {
@@ -118,7 +125,16 @@ impl AgentRegistry {
         Self {
             agents: RwLock::new(HashMap::new()),
             settings: RwLock::new(AgentSettings::default()),
+            pricing: RwLock::new(pricing::default_pricing_table()),
         }
+    }
+
+    pub fn pricing(&self) -> PricingTable {
+        self.pricing.read().clone()
+    }
+
+    pub fn update_pricing(&self, table: PricingTable) {
+        *self.pricing.write() = table;
     }
 
     pub fn snapshot_all(&self) -> Vec<AgentSnapshot> {
@@ -160,6 +176,8 @@ impl AgentRegistry {
         let preview_chars = settings.message_preview_chars;
         let text_idle = chrono::Duration::seconds(settings.text_idle_secs as i64);
 
+        let pricing_table = self.pricing.read().clone();
+
         let mut agents = self.agents.write();
         let agent = agents.entry(session_id.to_string()).or_insert_with(|| AgentInner {
             snapshot: AgentSnapshot {
@@ -171,6 +189,9 @@ impl AgentRegistry {
                 model: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
+                cache_write_5m_tokens: 0,
+                cache_write_1h_tokens: 0,
+                cache_read_tokens: 0,
                 cache_tokens: 0,
                 cost_usd: 0.0,
                 last_activity: at,
@@ -205,14 +226,25 @@ impl AgentRegistry {
                         agent.snapshot.project = project.clone();
                     }
                 }
-                ClaudeEvent::Usage { input, output, cache, model } => {
-                    agent.snapshot.input_tokens += input;
-                    agent.snapshot.output_tokens += output;
-                    agent.snapshot.cache_tokens += cache;
+                ClaudeEvent::Usage { usage, model } => {
+                    agent.snapshot.input_tokens += usage.input;
+                    agent.snapshot.output_tokens += usage.output;
+                    agent.snapshot.cache_write_5m_tokens += usage.cache_write_5m;
+                    agent.snapshot.cache_write_1h_tokens += usage.cache_write_1h;
+                    agent.snapshot.cache_read_tokens += usage.cache_read;
+                    agent.snapshot.cache_tokens = agent.snapshot.cache_write_5m_tokens
+                        + agent.snapshot.cache_write_1h_tokens
+                        + agent.snapshot.cache_read_tokens;
                     if !model.is_empty() {
                         agent.snapshot.model = model.clone();
                     }
-                    agent.snapshot.cost_usd += estimate_cost(model, *input, *output, *cache);
+                    let model_for_cost = if !model.is_empty() {
+                        model.as_str()
+                    } else {
+                        agent.snapshot.model.as_str()
+                    };
+                    let p = pricing_table.pricing_for(model_for_cost);
+                    agent.snapshot.cost_usd += pricing::estimate_cost(usage, &p);
                 }
                 ClaudeEvent::AssistantText { text } => {
                     let trimmed: String = text.chars().take(preview_chars).collect();
@@ -305,6 +337,9 @@ impl AgentRegistry {
                 model: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
+                cache_write_5m_tokens: 0,
+                cache_write_1h_tokens: 0,
+                cache_read_tokens: 0,
                 cache_tokens: 0,
                 cost_usd: 0.0,
                 last_activity: now,
@@ -567,18 +602,3 @@ fn short_id(id: &str) -> String {
     id[..n].to_string()
 }
 
-/// Estimate cost based on Anthropic pricing (per million tokens).
-pub fn estimate_cost(model: &str, input: u64, output: u64, cache: u64) -> f64 {
-    let model_lc = model.to_lowercase();
-    let (input_price, output_price, cache_price) = if model_lc.contains("opus") {
-        (15.0, 75.0, 1.875)
-    } else if model_lc.contains("sonnet") {
-        (3.0, 15.0, 0.375)
-    } else {
-        (0.80, 4.0, 0.10)
-    };
-    let m = 1_000_000.0;
-    (input as f64 / m) * input_price
-        + (output as f64 / m) * output_price
-        + (cache as f64 / m) * cache_price
-}

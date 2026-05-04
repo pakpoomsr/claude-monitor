@@ -171,11 +171,166 @@ pub struct AgentSnapshot {
     pub model: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub cache_write_5m_tokens: u64,
+    pub cache_write_1h_tokens: u64,
+    pub cache_read_tokens: u64,
+    /// Sum of the three cache columns, kept for any consumer that wants
+    /// a single combined cache figure (e.g. the cache-hit meter).
     pub cache_tokens: u64,
     pub cost_usd: f64,
     pub last_activity: String,
     pub started_at: String,
     pub parent_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+pub struct ModelPricing {
+    pub base_input: f64,
+    pub cache_write_5m: f64,
+    pub cache_write_1h: f64,
+    pub cache_read: f64,
+    pub output: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PricingEntry {
+    pub id: String,
+    pub label: String,
+    pub deprecated: bool,
+    pub pricing: ModelPricing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PricingTable {
+    pub entries: Vec<PricingEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CurrencyInfo {
+    pub code: String,
+    pub symbol: String,
+    pub rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CurrencyState {
+    pub active: String,
+    pub list: Vec<CurrencyInfo>,
+    pub fetched_at: Option<String>,
+}
+
+impl CurrencyState {
+    /// Look up the active currency's rate (units per USD). USD or unknown
+    /// defaults to 1.0 — i.e. show the dollar amount unchanged.
+    pub fn active_rate(&self) -> (String, f64) {
+        for c in &self.list {
+            if c.code == self.active {
+                return (c.symbol.clone(), c.rate);
+            }
+        }
+        ("$".to_string(), 1.0)
+    }
+}
+
+/// Format an RFC3339 timestamp as "DD MMM YYYY HH:MM:SS" (e.g.
+/// "04 May 2026 14:22:34"). Returns the input unchanged on parse failure
+/// so callers don't need to fall back themselves.
+pub fn format_datetime(rfc3339: &str) -> String {
+    let (date, rest) = match rfc3339.split_once('T') {
+        Some(p) => p,
+        None => return rfc3339.to_string(),
+    };
+    let parts: Vec<&str> = date.split('-').collect();
+    if parts.len() != 3 {
+        return rfc3339.to_string();
+    }
+    let (year, month, day) = (parts[0], parts[1], parts[2]);
+    let month_name = match month {
+        "01" => "Jan", "02" => "Feb", "03" => "Mar", "04" => "Apr",
+        "05" => "May", "06" => "Jun", "07" => "Jul", "08" => "Aug",
+        "09" => "Sep", "10" => "Oct", "11" => "Nov", "12" => "Dec",
+        _ => return rfc3339.to_string(),
+    };
+    // Trim fractional seconds and timezone — keep only HH:MM:SS.
+    let time: String = rest
+        .chars()
+        .take_while(|c| *c != '.' && *c != '+' && *c != 'Z' && *c != '-')
+        .collect();
+    if time.is_empty() {
+        format!("{day} {month_name} {year}")
+    } else {
+        format!("{day} {month_name} {year} {time}")
+    }
+}
+
+/// Format a USD amount in the currently-active currency. Symbol is prefixed
+/// (e.g. "€1,234.56"); precision adapts to magnitude so micro-costs stay
+/// legible, and the integer part uses comma thousand-separators.
+pub fn format_money(usd: f64, state: &CurrencyState) -> String {
+    let (symbol, rate) = state.active_rate();
+    let v = usd * rate;
+    let decimals = if v >= 1.0 { 2 } else if v >= 0.01 { 3 } else { 4 };
+    format!("{symbol}{}", thousand_sep(v, decimals))
+}
+
+/// Format a non-negative `f64` with comma thousand-separators on the integer
+/// part and a fixed number of fractional digits. Negative numbers fall back
+/// to plain `format!`.
+fn thousand_sep(v: f64, decimals: usize) -> String {
+    if v < 0.0 {
+        return format!("{v:.*}", decimals);
+    }
+    let raw = format!("{v:.*}", decimals);
+    let (int_part, frac_part) = raw
+        .split_once('.')
+        .map(|(i, f)| (i, format!(".{f}")))
+        .unwrap_or((raw.as_str(), String::new()));
+    let mut with_commas = String::with_capacity(int_part.len() + int_part.len() / 3);
+    for (i, c) in int_part.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            with_commas.push(',');
+        }
+        with_commas.push(c);
+    }
+    let int_with_commas: String = with_commas.chars().rev().collect();
+    format!("{int_with_commas}{frac_part}")
+}
+
+/// Format a YYYY-MM-DD date string as "DD MMM YY" (e.g. "04 May 26").
+/// Returns the input on parse failure.
+pub fn format_date_short(yyyy_mm_dd: &str) -> String {
+    let parts: Vec<&str> = yyyy_mm_dd.split('-').collect();
+    if parts.len() != 3 {
+        return yyyy_mm_dd.to_string();
+    }
+    let (year, month, day) = (parts[0], parts[1], parts[2]);
+    let yy = if year.len() >= 2 { &year[year.len() - 2..] } else { year };
+    let month_name = match month {
+        "01" => "Jan", "02" => "Feb", "03" => "Mar", "04" => "Apr",
+        "05" => "May", "06" => "Jun", "07" => "Jul", "08" => "Aug",
+        "09" => "Sep", "10" => "Oct", "11" => "Nov", "12" => "Dec",
+        _ => return yyyy_mm_dd.to_string(),
+    };
+    format!("{day} {month_name} {yy}")
+}
+
+impl PricingTable {
+    pub fn pricing_for(&self, model: &str) -> ModelPricing {
+        let model_lc = model.to_lowercase();
+        for e in &self.entries {
+            if !e.id.is_empty() && model_lc.contains(&e.id.to_lowercase()) {
+                return e.pricing;
+            }
+        }
+        // Frontend fallback mirrors the backend default (Sonnet family).
+        ModelPricing {
+            base_input: 3.0,
+            cache_write_5m: 3.75,
+            cache_write_1h: 6.0,
+            cache_read: 0.30,
+            output: 15.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

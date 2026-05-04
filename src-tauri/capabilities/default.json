@@ -11,6 +11,14 @@
     "core:window:allow-set-focus",
     "core:event:default",
     "notification:default",
-    "store:default"
+    "store:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://github.com/sponsors/pakpoomsr" },
+        { "url": "https://buymeacoffee.com/pakpoomsr" },
+        { "url": "https://github.com/pakpoomsr/claude-monitor/issues" }
+      ]
+    }
   ]
 }

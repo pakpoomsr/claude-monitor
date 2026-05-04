@@ -14,6 +14,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
 tauri-plugin-store = "2"
 
 serde = { workspace = true }
@@ -29,6 +30,7 @@ anyhow = "1"
 parking_lot = "0.12"
 axum = "0.8"
 rand = "0.9"
+subtle = "2.6"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 
-use crate::types::{avatar_for, avatar_url, project_label, short_id, AgentGroup, AgentSnapshot};
+use crate::types::{avatar_for, avatar_url, format_money, project_label, short_id, AgentGroup, AgentSnapshot, CurrencyState};
 
 #[component]
 pub fn AgentGrid(
@@ -81,7 +81,12 @@ fn AgentTile(
     let id_short = short_id(&snap.session_id);
     let model = model_short(&snap.model);
     let tool = snap.current_tool.clone();
-    let cost = format!("${:.3}", snap.cost_usd);
+    let cost_usd = snap.cost_usd;
+    let currency_sig = use_context::<RwSignal<CurrencyState>>();
+    let cost = move || {
+        let cur = currency_sig.map(|s| s.get()).unwrap_or_default();
+        format_money(cost_usd, &cur)
+    };
     let preview = snap.current_message.clone();
     let status_label = snap.status.label();
     let extra_class = if is_child { " tile--child" } else { "" };

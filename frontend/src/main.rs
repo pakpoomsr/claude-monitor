@@ -6,10 +6,10 @@ use leptos::prelude::*;
 
 use components::{
     agent_detail::AgentDetail, agent_grid::AgentGrid, api_usage_panel::ApiUsagePanel,
-    settings::SettingsPanel, usage_panel::UsagePanel,
+    settings::SettingsPanel, sponsor::SponsorPanel, usage_panel::UsagePanel,
 };
 use tauri_bridge::{invoke_no_args, listen};
-use types::{apply_filter, build_groups, AgentGroup, AgentSnapshot, AgentStatus, Filter, HooksStatus};
+use types::{apply_filter, build_groups, AgentGroup, AgentSnapshot, AgentStatus, CurrencyState, Filter, HooksStatus, PricingTable};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -17,6 +17,7 @@ enum Tab {
     Usage,
     Api,
     Settings,
+    Sponsor,
 }
 
 fn main() {
@@ -77,6 +78,27 @@ fn App() -> impl IntoView {
     let (hooks, set_hooks) = signal(HooksStatus::default());
     let (theme, set_theme_sig) = signal(current_theme());
 
+    // Shared pricing table — populated on startup, mutated by the Settings
+    // panel, read by every cost calculation in the UI. Provided via context
+    // so leaf components don't need props plumbed through.
+    let pricing: RwSignal<PricingTable> = RwSignal::new(PricingTable::default());
+    provide_context(pricing);
+    leptos::task::spawn_local(async move {
+        if let Ok(p) = invoke_no_args::<PricingTable>("get_pricing").await {
+            pricing.set(p);
+        }
+    });
+
+    // Shared currency state — display currency + cached FX rates. Same
+    // pattern as pricing.
+    let currency: RwSignal<CurrencyState> = RwSignal::new(CurrencyState::default());
+    provide_context(currency);
+    leptos::task::spawn_local(async move {
+        if let Ok(c) = invoke_no_args::<CurrencyState>("get_currency_state").await {
+            currency.set(c);
+        }
+    });
+
     // Periodically poll hooks_status so the indicator updates when the user
     // toggles registration in the Settings panel. Cheap (single Tauri call).
     leptos::task::spawn_local(async move {
@@ -110,7 +132,7 @@ fn App() -> impl IntoView {
         } else {
             types::project_label(&snap.project)
         };
-        set_toast.set(Some(format!("⏳ {label} is waiting for your response")));
+        set_toast.set(Some(format!("⏳ {label} is waiting")));
         leptos::task::spawn_local(async move {
             gloo_sleep(6000).await;
             set_toast.set(None);
@@ -215,6 +237,7 @@ fn App() -> impl IntoView {
                 <TabButton tab=Tab::Usage    current=tab set_tab label="Usage" />
                 <TabButton tab=Tab::Api      current=tab set_tab label="API" />
                 <TabButton tab=Tab::Settings current=tab set_tab label="Settings" />
+                <TabButton tab=Tab::Sponsor  current=tab set_tab label="❤ Sponsor" />
             </nav>
 
             <main class="main">
@@ -254,6 +277,7 @@ fn App() -> impl IntoView {
                     Tab::Usage => view! { <UsagePanel /> }.into_any(),
                     Tab::Api => view! { <ApiUsagePanel /> }.into_any(),
                     Tab::Settings => view! { <SettingsPanel /> }.into_any(),
+                    Tab::Sponsor => view! { <SponsorPanel /> }.into_any(),
                 }}
             </main>
 

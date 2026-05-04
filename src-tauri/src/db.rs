@@ -1,6 +1,20 @@
 use rusqlite::{Connection, Result, Row, params};
 use serde::{Deserialize, Serialize};
 
+/// Best-effort 0600 on Unix; no-op on Windows. Local sessions DB can hold
+/// per-project usage history that shouldn't be world-readable on shared hosts.
+fn restrict_to_owner(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
 // SQLite stores integers as i64; rusqlite 0.39 dropped the implicit u64 conversion.
 // Round-trip through i64 explicitly so callers can keep `u64` field types.
 fn get_u64(row: &Row, idx: usize) -> Result<u64> {
@@ -15,7 +29,14 @@ pub struct Session {
     pub model: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Legacy combined cache total. Equals
+    /// `cache_write_5m_tokens + cache_write_1h_tokens + cache_read_tokens`
+    /// for new rows; for rows written before the schema split, this is the
+    /// only cache figure available.
     pub cache_tokens: u64,
+    pub cache_write_5m_tokens: u64,
+    pub cache_write_1h_tokens: u64,
+    pub cache_read_tokens: u64,
     pub cost_usd: f64,
     pub started_at: String,
     pub updated_at: String,
@@ -51,6 +72,7 @@ impl Database {
 
         std::fs::create_dir_all(path.parent().unwrap()).ok();
         let conn = Connection::open(&path)?;
+        restrict_to_owner(&path);
         let db = Self { conn };
         db.init()?;
         Ok(db)
@@ -72,7 +94,27 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_sessions_updated
                 ON sessions(updated_at);
-        ")
+        ")?;
+        // Idempotent migration: add the three split-cache columns if they
+        // don't exist yet. Older rows keep `cache_tokens` as the only cache
+        // figure; new rows populate both legacy and split columns.
+        self.add_column_if_missing("cache_write_5m_tokens", "INTEGER NOT NULL DEFAULT 0")?;
+        self.add_column_if_missing("cache_write_1h_tokens", "INTEGER NOT NULL DEFAULT 0")?;
+        self.add_column_if_missing("cache_read_tokens", "INTEGER NOT NULL DEFAULT 0")?;
+        Ok(())
+    }
+
+    fn add_column_if_missing(&self, name: &str, decl: &str) -> Result<()> {
+        let exists: bool = self
+            .conn
+            .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = ?1")?
+            .query_row(params![name], |_| Ok(true))
+            .unwrap_or(false);
+        if !exists {
+            self.conn
+                .execute(&format!("ALTER TABLE sessions ADD COLUMN {name} {decl}"), [])?;
+        }
+        Ok(())
     }
 
     /// Replace (insert-or-overwrite) a session row. Token totals are running
@@ -82,12 +124,16 @@ impl Database {
         self.conn.execute(
             "INSERT INTO sessions
                 (id, project_path, model, input_tokens, output_tokens,
-                 cache_tokens, cost_usd, started_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 cache_tokens, cache_write_5m_tokens, cache_write_1h_tokens,
+                 cache_read_tokens, cost_usd, started_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(id) DO UPDATE SET
                 input_tokens = excluded.input_tokens,
                 output_tokens = excluded.output_tokens,
                 cache_tokens = excluded.cache_tokens,
+                cache_write_5m_tokens = excluded.cache_write_5m_tokens,
+                cache_write_1h_tokens = excluded.cache_write_1h_tokens,
+                cache_read_tokens = excluded.cache_read_tokens,
                 cost_usd = excluded.cost_usd,
                 model = excluded.model,
                 project_path = excluded.project_path,
@@ -99,6 +145,9 @@ impl Database {
                 session.input_tokens as i64,
                 session.output_tokens as i64,
                 session.cache_tokens as i64,
+                session.cache_write_5m_tokens as i64,
+                session.cache_write_1h_tokens as i64,
+                session.cache_read_tokens as i64,
                 session.cost_usd,
                 session.started_at,
                 session.updated_at,
@@ -140,7 +189,8 @@ impl Database {
     pub fn get_recent_sessions(&self, limit: usize) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_path, model, input_tokens, output_tokens,
-                    cache_tokens, cost_usd, started_at, updated_at
+                    cache_tokens, cache_write_5m_tokens, cache_write_1h_tokens,
+                    cache_read_tokens, cost_usd, started_at, updated_at
              FROM sessions
              ORDER BY updated_at DESC
              LIMIT ?1"
@@ -154,9 +204,12 @@ impl Database {
                 input_tokens: get_u64(row, 3)?,
                 output_tokens: get_u64(row, 4)?,
                 cache_tokens: get_u64(row, 5)?,
-                cost_usd: row.get(6)?,
-                started_at: row.get(7)?,
-                updated_at: row.get(8)?,
+                cache_write_5m_tokens: get_u64(row, 6)?,
+                cache_write_1h_tokens: get_u64(row, 7)?,
+                cache_read_tokens: get_u64(row, 8)?,
+                cost_usd: row.get(9)?,
+                started_at: row.get(10)?,
+                updated_at: row.get(11)?,
             })
         })?;
 
@@ -177,6 +230,34 @@ impl Database {
         )?;
 
         let rows = stmt.query_map([], |row| {
+            Ok(DayStats {
+                date: row.get(0)?,
+                input_tokens: get_u64(row, 1)?,
+                output_tokens: get_u64(row, 2)?,
+                cost_usd: row.get(3)?,
+            })
+        })?;
+
+        rows.collect()
+    }
+
+    /// Per-day usage between two YYYY-MM-DD dates, inclusive on both ends.
+    /// Days with no sessions are omitted (the frontend fills gaps so the
+    /// chart axis is contiguous).
+    pub fn get_usage_range(&self, start: &str, end: &str) -> Result<Vec<DayStats>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                date(updated_at) as day,
+                SUM(input_tokens),
+                SUM(output_tokens),
+                SUM(cost_usd)
+             FROM sessions
+             WHERE date(updated_at) BETWEEN ?1 AND ?2
+             GROUP BY day
+             ORDER BY day ASC"
+        )?;
+
+        let rows = stmt.query_map(params![start, end], |row| {
             Ok(DayStats {
                 date: row.get(0)?,
                 input_tokens: get_u64(row, 1)?,

@@ -12,6 +12,19 @@ No JavaScript framework. Light + dark themes. ~10 MB binary.
 
 ---
 
+## 💾 Download
+
+Prefer to install instead of build from source? Grab the latest signed-pending Windows installer directly from this repo:
+
+- **Windows (x64)** — [Claude-Monitor-0.1.0-x64-setup.exe](installer/windows/Claude-Monitor-0.1.0-x64-setup.exe?raw=1)
+  - Double-click and click through. The installer drops the app under `%LocalAppData%\Programs\Claude Monitor\` and adds a Start-menu shortcut.
+  - WebView2 is required (preinstalled on Windows 10/11). The installer will prompt to fetch it if missing.
+  - SmartScreen may warn on first run because the binary isn't code-signed yet. Click **More info → Run anyway**.
+
+> macOS `.dmg` and Linux `.AppImage` are not yet prebuilt. Use the [Quick start](#-quick-start) below to build from source — it's a single `cargo tauri build`.
+
+---
+
 ## ⚡ Quick start
 
 ```bash
@@ -113,14 +126,15 @@ cargo tauri build    # release bundle for distribution
 > ✅ Dashboard updates within a second of every PreToolUse / Stop / Notification
 > from any active `claude` session, anywhere on your machine.
 
-### The four tabs
+### The five tabs
 
 | Tab | What you see |
 |---|---|
-| 🟢 **Agents** | Live grid — one tile per Claude session, color-coded by status, with parent / sub-agent grouping. Click a tile for the detail pane (last message, in-flight tool, **token cost breakdown table**, **I/O + cache hit meters**). |
-| 📊 **Usage** | Local SQLite history — today's tokens & cost, plus 7-day bar chart. |
+| 🟢 **Agents** | Live grid — one tile per Claude session, color-coded by status, with parent / sub-agent grouping. Click a tile for the detail pane (last message, in-flight tool, **5-column cost breakdown** — Base Input / 5m Cache Write / 1h Cache Write / Cache Hit & Refresh / Output — **I/O + cache-hit meters**). |
+| 📊 **Usage** | Local SQLite history — today's tokens & cost, plus a bar chart with **Last 7 days / Last 30 days / Custom date range** selector. Each bar shows the date and cost without hovering. |
 | 🌐 **API** | Optional Anthropic billing-API view (paste a key — kept in memory only, never written to disk). |
-| ⚙️ **Settings** | Toggle the real-time hooks on/off, tune state-machine thresholds. |
+| ⚙️ **Settings** | Hook setup, state-machine thresholds, **editable per-model pricing** (13 SKUs × 5 cells, sourced from Anthropic's pricing page), **display currency** dropdown (10 currencies, FX rates from Frankfurter cached daily). |
+| ❤ **Sponsor** | Quick links to GitHub Sponsors, Buy Me a Coffee, and the issue tracker. Opens in your default browser. |
 
 ### Status legend
 
@@ -157,17 +171,30 @@ still keeps the dashboard working — just less precisely.
   member, so a parent "Waiting on its sub" is correctly counted as **Working**
 - **Filter pills** — All / Active / Idle on the Agents tab
 - **Detail pane** — last assistant message, in-flight tool, **I/O bar**,
-  **cache-hit gauge**, per-token-type **cost table** (Input / Output / Cache
-  with rate × tokens = cost rows that sum to the displayed total), project path
+  **cache-hit gauge**, **5-row cost table** (Base Input / 5m Cache Write /
+  1h Cache Write / Cache Hit & Refresh / Output, with rate × tokens = cost
+  per row, summing to the displayed total), project path
+- **Editable per-model pricing** — 13 SKUs from Opus 4.7 down to Haiku 3,
+  each with the five Anthropic price columns. Defaults match
+  [the official pricing page](https://platform.claude.com/docs/en/about-claude/pricing);
+  edit any cell in Settings and the whole UI re-costs instantly.
+- **Currency conversion** — pick from 10 currencies (USD, EUR, GBP, JPY,
+  CNY, THB, SGD, INR, KRW, AUD); rates fetched from
+  [Frankfurter](https://www.frankfurter.app/) (free, no API key, ECB-sourced)
+  and cached for 24h.
 - **Real-time hooks** (auto-on) — PreToolUse / Stop / Notification / SubagentStart
-  → embedded localhost HTTP server. Far more accurate than file-tailing
+  → embedded localhost HTTP server with constant-time token auth. Far more
+  accurate than file-tailing.
 - **JSONL fallback** — when hooks aren't registered (or for sessions that started
   before they were), status is inferred from `~/.claude/projects/**/*.jsonl` with
   a state machine that includes the `system/turn_duration` end-of-turn marker
-- **Local usage history** — SQLite-backed token and cost rollups, 7-day chart
+- **Local usage history** — SQLite-backed token and cost rollups; chart with
+  Last 7d / Last 30d / Custom date-range selector, each bar showing date + cost
 - **Optional Anthropic billing API** — paste a key, kept in memory only
 - **Tray icon + toast** — toast pops up when an agent flips to Waiting
 - **Light + dark themes** — modern glassy design language, reduced-motion friendly
+- **Hardened by default** — strict CSP, owner-only file permissions on Unix,
+  symlink-safe writes; see [SECURITY.md](SECURITY.md)
 
 ---
 
@@ -242,15 +269,32 @@ frontend groups them under their parent.
 
 ---
 
-## 💰 Pricing assumptions (per million tokens)
+## 💰 Pricing (per million tokens, USD)
 
-| Model  | Input  | Output | Cache  |
-|--------|--------|--------|--------|
-| Opus   | $15.00 | $75.00 | $1.875 |
-| Sonnet | $3.00  | $15.00 | $0.375 |
-| Haiku  | $0.80  | $4.00  | $0.10  |
+Defaults sourced from the [Anthropic pricing page](https://platform.claude.com/docs/en/about-claude/pricing).
+**Edit any cell in Settings → Model pricing** — overrides persist in
+`<data_local_dir>/claude-monitor/prefs.json` and take effect immediately.
+"Reset all to defaults" returns to the values below and resets the display
+currency to USD.
 
-Edit `src-tauri/src/agents.rs::estimate_cost` to adjust.
+| Model | Base Input | 5m Cache Write | 1h Cache Write | Cache Hit & Refresh | Output |
+|---|---:|---:|---:|---:|---:|
+| Claude Opus 4.7 | 5.00 | 6.25 | 10.00 | 0.50 | 25.00 |
+| Claude Opus 4.6 | 5.00 | 6.25 | 10.00 | 0.50 | 25.00 |
+| Claude Opus 4.5 | 5.00 | 6.25 | 10.00 | 0.50 | 25.00 |
+| Claude Opus 4.1 | 15.00 | 18.75 | 30.00 | 1.50 | 75.00 |
+| Claude Opus 4 | 15.00 | 18.75 | 30.00 | 1.50 | 75.00 |
+| Claude Sonnet 4.6 | 3.00 | 3.75 | 6.00 | 0.30 | 15.00 |
+| Claude Sonnet 4.5 | 3.00 | 3.75 | 6.00 | 0.30 | 15.00 |
+| Claude Sonnet 4 | 3.00 | 3.75 | 6.00 | 0.30 | 15.00 |
+| Claude Sonnet 3.7 *(deprecated)* | 3.00 | 3.75 | 6.00 | 0.30 | 15.00 |
+| Claude Haiku 4.5 | 1.00 | 1.25 | 2.00 | 0.10 | 5.00 |
+| Claude Haiku 3.5 | 0.80 | 1.00 | 1.60 | 0.08 | 4.00 |
+| Claude Opus 3 *(deprecated)* | 15.00 | 18.75 | 30.00 | 1.50 | 75.00 |
+| Claude Haiku 3 | 0.25 | 0.30 | 0.50 | 0.03 | 1.25 |
+
+The defaults table lives in `src-tauri/src/pricing.rs::default_pricing_table`
+— update there when Anthropic changes a published rate.
 
 ---
 
@@ -259,19 +303,23 @@ Edit `src-tauri/src/agents.rs::estimate_cost` to adjust.
 ```
 claude-monitor/
 ├── Cargo.toml                     # workspace root (edition 2024)
+├── installer/windows/             # prebuilt NSIS installer for Windows
+├── SECURITY.md                    # threat model + reporting
 ├── src-tauri/                     # native backend
 │   ├── Cargo.toml
 │   ├── tauri.conf.json
-│   ├── capabilities/default.json
+│   ├── capabilities/default.json  # Tauri capability scopes (incl. opener URLs)
 │   └── src/
 │       ├── main.rs                # Tauri commands, tray, app wiring
-│       ├── watcher.rs             # tails ~/.claude/projects/**/*.jsonl
-│       ├── parser.rs              # JSONL → ClaudeEvent
+│       ├── watcher.rs             # tails ~/.claude/projects/**/*.jsonl, bounded reader
+│       ├── parser.rs              # JSONL → ClaudeEvent (5-field TokenUsage)
 │       ├── agents.rs              # AgentRegistry, state machine, tick loop, HookEvent
-│       ├── hooks.rs               # axum HTTP server for Claude Code hooks
-│       ├── settings_writer.rs     # registers hooks in ~/.claude/settings.json
-│       ├── prefs.rs               # persistent app prefs (hooks_enabled, etc.)
-│       ├── db.rs                  # SQLite history (rusqlite, bundled)
+│       ├── hooks.rs               # axum HTTP server (constant-time auth, body cap)
+│       ├── settings_writer.rs     # registers hooks; symlink-safe atomic writes
+│       ├── prefs.rs               # prefs.json — hooks_enabled, pricing_overrides, currency
+│       ├── pricing.rs             # ModelPricing/PricingTable + 13-SKU defaults
+│       ├── currency.rs            # Frankfurter FX client + 24h cache logic
+│       ├── db.rs                  # SQLite history (rusqlite, bundled, with migration)
 │       └── api.rs                 # Anthropic billing API client
 └── frontend/                      # Rust → WASM via Trunk
     ├── Cargo.toml
@@ -279,15 +327,18 @@ claude-monitor/
     ├── index.html
     ├── styles/main.css            # modern glassy theme (light + dark tokens)
     └── src/
-        ├── main.rs                # Leptos app shell, tab routing, theme toggle
+        ├── main.rs                # Leptos app shell, tab routing, theme, pricing/currency context
         ├── tauri_bridge.rs        # invoke / listen wrappers around window.__TAURI__
-        ├── types.rs               # AgentStatus, AgentSnapshot, AgentGroup, Filter, HooksStatus
+        ├── types.rs               # AgentStatus, AgentSnapshot, AgentGroup, Filter,
+        │                          # HooksStatus, PricingTable, CurrencyState,
+        │                          # format_money / format_date_short / format_datetime
         └── components/
             ├── agent_grid.rs      # group rendering with nested sub-agents
-            ├── agent_detail.rs    # selected-agent inspector + cost table + meters
-            ├── usage_panel.rs     # local SQLite usage chart
+            ├── agent_detail.rs    # selected-agent inspector + 5-row cost table + meters
+            ├── usage_panel.rs     # local SQLite usage chart + range selector
             ├── api_usage_panel.rs # Anthropic billing-API view
-            └── settings.rs        # hook setup + state machine thresholds
+            ├── settings.rs        # hook toggle, thresholds, pricing table, currency picker
+            └── sponsor.rs         # Sponsor tab — outbound links via tauri-plugin-opener
 ```
 
 ---
@@ -297,14 +348,21 @@ claude-monitor/
 | Command | Returns |
 |---|---|
 | `list_agents` | `Vec<AgentSnapshot>` |
-| `get_agent { session_id }` | `Option<AgentSnapshot>` |
+| `get_agent { sessionId }` | `Option<AgentSnapshot>` |
 | `get_agent_settings` / `set_agent_settings { settings }` | `AgentSettings` |
 | `hooks_status` | `HooksStatus { registered, url, port }` |
 | `register_hooks` / `unregister_hooks` | `HooksStatus` |
 | `get_daily_summary` / `get_weekly_chart` / `get_sessions { limit }` | SQLite history |
+| `get_usage_range { startDate, endDate }` | `Vec<DayStats>` for any YYYY-MM-DD range |
 | `set_api_key { key }` / `fetch_api_usage` | Anthropic billing API |
+| `get_pricing` / `set_pricing { table }` / `reset_pricing` | `PricingTable` (defaults + overrides) |
+| `get_currency_state` / `set_active_currency { code }` / `refresh_currency_rates` | `CurrencyState { active, list, fetched_at }` |
 
 Events emitted to the frontend: `agent-status`, `agent-waiting`.
+
+External links from the Sponsor tab go through the `plugin:opener|open_url`
+command (provided by `tauri-plugin-opener`); the URL allowlist lives in
+`src-tauri/capabilities/default.json`.
 
 ---
 
@@ -314,12 +372,19 @@ Events emitted to the frontend: `agent-status`, `agent-waiting`.
   The auto-register on launch refreshes the URL in `settings.json` so this is
   invisible — no manual action needed unless you've explicitly disabled hooks.
 - The `tauri.conf.json` setting `app.withGlobalTauri: true` is required so the
-  WASM bridge can use `window.__TAURI__.event.listen` — don't remove it.
+  WASM bridge can use `window.__TAURI__.event.listen` — don't remove it. The
+  exposure is mitigated by the strict CSP also set in `tauri.conf.json`
+  (`default-src 'self'`, no remote scripts allowed).
+- The CSP `connect-src` whitelist allows only `https://api.anthropic.com` and
+  `https://api.frankfurter.app`. If you add a new outbound destination, update
+  the policy too or fetch will be blocked.
 - `beforeDevCommand` must run from `frontend/`, hence the `cd frontend &&`
   prefix — Tauri runs the command from the project root by default.
 - Hook entries are tagged `_claude_monitor: true`. If you edit
   `~/.claude/settings.json` manually, leave that key alone or unregister via
   the app first.
+- Bundle identifier is `com.claudemonitor.desktop` (not `.app` — that suffix
+  collides with the macOS application bundle extension).
 
 ---
 
@@ -349,9 +414,22 @@ to talk.
 
 ## 🛣 Roadmap
 
+Recently shipped:
+
+- [x] Editable per-model pricing (13 SKUs × 5 columns)
+- [x] Currency conversion (Frankfurter, 10 currencies)
+- [x] Custom date-range usage chart (Last 7d / 30d / Custom)
+- [x] Sponsor tab with system-browser links
+- [x] Security hardening (constant-time auth, strict CSP, symlink-safe writes — see [SECURITY.md](SECURITY.md))
+- [x] Prebuilt Windows installer in `installer/windows/`
+
+Still planned:
+
 - [ ] Pin hook server to a fixed port so registrations survive restarts
 - [ ] Per-project rollup view
 - [ ] Native rate-limit alerts via `tauri-plugin-notification`
 - [ ] Export CSV
 - [ ] Sprite skin picker
 - [ ] Detect Claude Code subscription plan
+- [ ] Prebuilt macOS `.dmg` and Linux `.AppImage` bundles in `installer/`
+- [ ] Code-sign the Windows installer to clear SmartScreen
