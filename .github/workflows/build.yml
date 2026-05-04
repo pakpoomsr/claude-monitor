@@ -1,0 +1,98 @@
+name: build
+
+# Verify the bundle still builds on every push to main (and every PR), and
+# upload the resulting installers as workflow artifacts so contributors can
+# grab dev builds from the Actions tab.
+# This does NOT publish a GitHub Release — that's release.yml's job.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel any in-flight build for the same ref when a new push lands.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: windows-x64
+            os: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+            args: ''
+          - label: macos-universal
+            os: macos-latest
+            rust-target: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target universal-apple-darwin
+          - label: linux-x64
+            os: ubuntu-22.04
+            rust-target: x86_64-unknown-linux-gnu
+            args: ''
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }},wasm32-unknown-unknown
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            src-tauri
+            frontend
+          # Bust the cache when the workflow changes, so a CI tweak doesn't
+          # silently reuse an incompatible artifact.
+          shared-key: tauri-${{ matrix.label }}
+
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl wget file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Install trunk
+        uses: jetli/trunk-action@v0.5.0
+        with:
+          version: latest
+
+      - name: Build with tauri-action
+        uses: tauri-apps/tauri-action@v0
+        with:
+          args: ${{ matrix.args }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-monitor-${{ matrix.label }}
+          # Glob with `**` so we catch both layouts: Windows/Linux bundles
+          # land at `target/release/bundle/...`, macOS-universal lands at
+          # `target/universal-apple-darwin/release/bundle/...`.
+          path: |
+            src-tauri/target/**/bundle/nsis/*.exe
+            src-tauri/target/**/bundle/msi/*.msi
+            src-tauri/target/**/bundle/dmg/*.dmg
+            src-tauri/target/**/bundle/macos/*.app
+            src-tauri/target/**/bundle/appimage/*.AppImage
+            src-tauri/target/**/bundle/deb/*.deb
+            src-tauri/target/**/bundle/rpm/*.rpm
+          if-no-files-found: ignore
+          retention-days: 30

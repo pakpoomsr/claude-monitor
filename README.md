@@ -14,14 +14,25 @@ No JavaScript framework. Light + dark themes. ~10 MB binary.
 
 ## 💾 Download
 
-Prefer to install instead of build from source? Grab the latest signed-pending Windows installer directly from this repo:
+Prefer to install instead of build from source? Grab the latest installers from the
+[**Releases page**](https://github.com/pakpoomsr/claude-monitor/releases/latest) —
+no GitHub login required.
 
-- **Windows (x64)** — [Claude-Monitor-0.1.0-x64-setup.exe](installer/windows/Claude-Monitor-0.1.0-x64-setup.exe?raw=1)
-  - Double-click and click through. The installer drops the app under `%LocalAppData%\Programs\Claude Monitor\` and adds a Start-menu shortcut.
-  - WebView2 is required (preinstalled on Windows 10/11). The installer will prompt to fetch it if missing.
-  - SmartScreen may warn on first run because the binary isn't code-signed yet. Click **More info → Run anyway**.
+| Platform | File | Notes |
+|---|---|---|
+| **Windows (x64)** | `Claude Monitor_<ver>_x64-setup.exe` *(NSIS)* or `.msi` | WebView2 required (preinstalled on Win 10/11; installer prompts otherwise) |
+| **macOS (Apple Silicon)** | `Claude Monitor_<ver>_aarch64.dmg` | First run: right-click → **Open** to bypass Gatekeeper |
+| **macOS (Intel)** | `Claude Monitor_<ver>_x64.dmg` | Same Gatekeeper bypass on first run |
+| **Linux (universal)** | `claude-monitor_<ver>_amd64.AppImage` | `chmod +x` and run; no install needed |
+| **Linux (Debian/Ubuntu)** | `claude-monitor_<ver>_amd64.deb` | `sudo apt install ./claude-monitor_<ver>_amd64.deb` |
+| **Linux (RHEL/Fedora)** | `claude-monitor-<ver>-1.x86_64.rpm` | `sudo rpm -i claude-monitor-<ver>-1.x86_64.rpm` |
 
-> macOS `.dmg` and Linux `.AppImage` are not yet prebuilt. Use the [Quick start](#-quick-start) below to build from source — it's a single `cargo tauri build`.
+> ⚠️ Windows binaries aren't code-signed yet — SmartScreen will warn on first run.
+> Click **More info → Run anyway**. macOS binaries aren't notarized either, hence
+> the right-click → Open dance. Both are on the roadmap once a signing cert is sorted.
+
+If your platform isn't listed, the [Quick start](#-quick-start) below builds from
+source — it's a single `cargo tauri build`.
 
 ---
 
@@ -303,7 +314,7 @@ The defaults table lives in `src-tauri/src/pricing.rs::default_pricing_table`
 ```
 claude-monitor/
 ├── Cargo.toml                     # workspace root (edition 2024)
-├── installer/windows/             # prebuilt NSIS installer for Windows
+├── .github/workflows/             # build.yml (per-push) + release.yml (per-tag)
 ├── SECURITY.md                    # threat model + reporting
 ├── src-tauri/                     # native backend
 │   ├── Cargo.toml
@@ -421,7 +432,7 @@ Recently shipped:
 - [x] Custom date-range usage chart (Last 7d / 30d / Custom)
 - [x] Sponsor tab with system-browser links
 - [x] Security hardening (constant-time auth, strict CSP, symlink-safe writes — see [SECURITY.md](SECURITY.md))
-- [x] Prebuilt Windows installer in `installer/windows/`
+- [x] Cross-platform CI: per-push `build.yml` + tag-driven `release.yml` (see `.github/workflows/`)
 
 Still planned:
 

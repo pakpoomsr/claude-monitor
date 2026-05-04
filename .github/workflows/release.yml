@@ -1,0 +1,110 @@
+name: release
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.2.0). Must already exist in the repo.'
+        required: true
+        type: string
+
+permissions:
+  contents: write  # required to create the GitHub Release
+
+jobs:
+  release:
+    name: release (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: windows-x64
+            os: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+            args: ''
+          - label: macos-universal
+            os: macos-latest
+            rust-target: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target universal-apple-darwin
+          - label: linux-x64
+            os: ubuntu-22.04
+            rust-target: x86_64-unknown-linux-gnu
+            args: ''
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }},wasm32-unknown-unknown
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            src-tauri
+            frontend
+          shared-key: tauri-release-${{ matrix.label }}
+
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl wget file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Install trunk
+        uses: jetli/trunk-action@v0.5.0
+        with:
+          version: latest
+
+      - name: Build and attach to release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Code-signing secrets — leave unset for an unsigned build.
+          # Uncomment + add to repo secrets when you're ready to sign.
+          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # APPLE_ID: ${{ secrets.APPLE_ID }}
+          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ inputs.tag || github.ref_name }}
+          releaseName: 'Claude Monitor __VERSION__'
+          releaseBody: |
+            ## What's new
+
+            See [CHANGELOG.md](./CHANGELOG.md) or the commit history for details.
+
+            ## Downloads
+
+            | Platform | File |
+            |---|---|
+            | Windows (x64) | `Claude Monitor_<version>_x64-setup.exe` |
+            | macOS (Apple Silicon) | `Claude Monitor_<version>_aarch64.dmg` |
+            | macOS (Intel) | `Claude Monitor_<version>_x64.dmg` |
+            | Linux (AppImage) | `claude-monitor_<version>_amd64.AppImage` |
+            | Linux (Debian/Ubuntu) | `claude-monitor_<version>_amd64.deb` |
+            | Linux (RPM) | `claude-monitor-<version>-1.x86_64.rpm` |
+
+            > Windows binary isn't code-signed yet — SmartScreen will warn on first run.
+            > Click **More info → Run anyway**.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
