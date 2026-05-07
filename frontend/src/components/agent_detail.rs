@@ -1,6 +1,19 @@
 use leptos::prelude::*;
+use serde::Serialize;
 
-use crate::types::{avatar_for, avatar_url, format_money, project_label, short_id, AgentSnapshot, CurrencyState, ModelPricing, PricingTable};
+use crate::tauri_bridge::invoke;
+use crate::types::{
+    avatar_for, avatar_url, format_log_time, format_money, project_label, short_id, AgentSnapshot,
+    CurrencyState, LogEntry, ModelPricing, PricingTable,
+};
+use crate::EventLogMap;
+
+#[derive(Serialize)]
+struct GetEventsArgs {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    limit: Option<usize>,
+}
 
 #[component]
 pub fn AgentDetail(
@@ -11,6 +24,58 @@ pub fn AgentDetail(
     let snap = move || {
         let id = selected.get()?;
         agents.with(|list| list.iter().find(|a| a.session_id == id).cloned())
+    };
+
+    let log_sig = use_context::<RwSignal<EventLogMap>>();
+
+    // Backfill the event log when an agent is first selected. Only fires
+    // when the bucket is empty — repeat selections of an already-streamed
+    // agent skip the network round-trip. We read the log untracked so this
+    // effect only re-runs on `selected` changes, not on every new event.
+    Effect::new(move |_| {
+        let Some(id) = selected.get() else { return };
+        let bucket_empty = log_sig
+            .map(|s| {
+                s.with_untracked(|m| m.get(&id).map(|q| q.is_empty()).unwrap_or(true))
+            })
+            .unwrap_or(true);
+        if !bucket_empty {
+            return;
+        }
+        let target_id = id.clone();
+        leptos::task::spawn_local(async move {
+            let args = GetEventsArgs {
+                session_id: target_id.clone(),
+                limit: Some(200),
+            };
+            if let Ok(entries) = invoke::<Vec<LogEntry>, _>("get_agent_events", &args).await
+                && let Some(sig) = log_sig
+            {
+                sig.update(|m| {
+                    let q = m.entry(target_id).or_default();
+                    // Don't clobber entries that streamed in between selection
+                    // and the backfill response landing.
+                    if q.is_empty() {
+                        for entry in entries {
+                            q.push_back(entry);
+                        }
+                    }
+                });
+            }
+        });
+    });
+
+    let entries_for_selected = move || -> Vec<LogEntry> {
+        let Some(id) = selected.get() else { return Vec::new() };
+        log_sig
+            .map(|s| {
+                s.with(|m| {
+                    m.get(&id)
+                        .map(|q| q.iter().cloned().collect::<Vec<_>>())
+                        .unwrap_or_default()
+                })
+            })
+            .unwrap_or_default()
     };
 
     view! {
@@ -88,6 +153,39 @@ pub fn AgentDetail(
                                 <code class="path">{
                                     if s.project.is_empty() { "(unknown)".to_string() } else { s.project.clone() }
                                 }</code>
+                            </section>
+
+                            <section class="detail-section">
+                                <h3>"Recent events"</h3>
+                                <div class="event-log">
+                                    {move || {
+                                        let entries = entries_for_selected();
+                                        if entries.is_empty() {
+                                            view! {
+                                                <div class="event-log-empty muted">
+                                                    "No events captured yet."
+                                                </div>
+                                            }.into_any()
+                                        } else {
+                                            // Newest at the top — reverse so the most recent
+                                            // entry is the first thing you read.
+                                            let rows: Vec<LogEntry> = entries.into_iter().rev().collect();
+                                            view! {
+                                                <For
+                                                    each=move || rows.clone()
+                                                    key=|e: &LogEntry| format!("{}|{}|{}", e.timestamp, e.kind, e.summary)
+                                                    let:e
+                                                >
+                                                    <div class=format!("event-row event-row--{}", e.source.css_class())>
+                                                        <time class="event-time">{format_log_time(&e.timestamp)}</time>
+                                                        <span class="event-kind">{e.kind.clone()}</span>
+                                                        <span class="event-summary">{e.summary.clone()}</span>
+                                                    </div>
+                                                </For>
+                                            }.into_any()
+                                        }
+                                    }}
+                                </div>
                             </section>
                         </div>
                     }.into_any()

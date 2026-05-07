@@ -1,4 +1,5 @@
 use crate::agents::{AgentRegistry, AgentSnapshot, HookEvent};
+use crate::db::Database;
 use axum::{
     extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode},
@@ -12,6 +13,7 @@ use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tauri::{AppHandle, Emitter};
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 
 /// Snapshot of the embedded hook server's bind state. Surfaced to the
 /// frontend so the Settings panel can write the right URL into
@@ -26,6 +28,7 @@ pub struct HookServer {
 #[derive(Clone)]
 struct ServerState {
     registry: Arc<AgentRegistry>,
+    db: Arc<Mutex<Database>>,
     app: AppHandle,
     token: String,
 }
@@ -33,7 +36,11 @@ struct ServerState {
 /// Bind the HTTP server on `127.0.0.1:0` (random ephemeral port), spawn the
 /// accept loop on Tauri's async runtime, and return the bound url + auth
 /// token so callers can register hooks pointing at it.
-pub async fn spawn(app: AppHandle, registry: Arc<AgentRegistry>) -> std::io::Result<HookServer> {
+pub async fn spawn(
+    app: AppHandle,
+    registry: Arc<AgentRegistry>,
+    db: Arc<Mutex<Database>>,
+) -> std::io::Result<HookServer> {
     let token = random_token()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("rng failure: {e}")))?;
 
@@ -43,6 +50,7 @@ pub async fn spawn(app: AppHandle, registry: Arc<AgentRegistry>) -> std::io::Res
 
     let state = ServerState {
         registry,
+        db,
         app: app.clone(),
         token: token.clone(),
     };
@@ -90,7 +98,17 @@ async fn hook_handler(
         }
     };
 
-    if let Some(snap) = state.registry.apply_hook(&ev) {
+    let (maybe_snap, log_entries) = state.registry.apply_hook(&ev);
+    for entry in &log_entries {
+        let _ = state.app.emit("agent-event", entry);
+    }
+    if !log_entries.is_empty() {
+        let mut db = state.db.lock().await;
+        if let Err(e) = db.insert_events(&log_entries) {
+            eprintln!("[claude-monitor] event log persist failed: {e}");
+        }
+    }
+    if let Some(snap) = maybe_snap {
         emit_status(&state.app, &snap);
     }
 

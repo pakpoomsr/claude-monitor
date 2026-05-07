@@ -1,6 +1,8 @@
 use rusqlite::{Connection, Result, Row, params};
 use serde::{Deserialize, Serialize};
 
+use crate::agents::{LogEntry, LogSource};
+
 /// Best-effort 0600 on Unix; no-op on Windows. Local sessions DB can hold
 /// per-project usage history that shouldn't be world-readable on shared hosts.
 fn restrict_to_owner(path: &std::path::Path) {
@@ -94,6 +96,19 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_sessions_updated
                 ON sessions(updated_at);
+
+            CREATE TABLE IF NOT EXISTS agent_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                ts TEXT NOT NULL,
+                source TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                details TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_events_session_ts
+                ON agent_events(session_id, ts DESC);
         ")?;
         // Idempotent migration: add the three split-cache columns if they
         // don't exist yet. Older rows keep `cache_tokens` as the only cache
@@ -239,6 +254,74 @@ impl Database {
         })?;
 
         rows.collect()
+    }
+
+    /// Persist a batch of LogEntries from the live ring buffer. Idempotent
+    /// in spirit but not enforced — callers should pass each entry once.
+    /// Wrapped in a transaction so a few hundred rapid events don't pay
+    /// fsync cost per insert.
+    pub fn insert_events(&mut self, entries: &[LogEntry]) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO agent_events (session_id, ts, source, kind, summary, details)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for e in entries {
+                let source = match e.source {
+                    LogSource::Jsonl => "jsonl",
+                    LogSource::Hook => "hook",
+                };
+                stmt.execute(params![
+                    e.session_id,
+                    e.timestamp.to_rfc3339(),
+                    source,
+                    e.kind,
+                    e.summary,
+                    e.details,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Most-recent N entries for a session, oldest first / newest last
+    /// (matching the ring buffer ordering callers expect).
+    pub fn events_for(&self, session_id: &str, limit: usize) -> Result<Vec<LogEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id, ts, source, kind, summary, details
+             FROM agent_events
+             WHERE session_id = ?1
+             ORDER BY ts DESC, id DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![session_id, limit as i64], |row| {
+            let ts_str: String = row.get(1)?;
+            let timestamp = chrono::DateTime::parse_from_rfc3339(&ts_str)
+                .map(|d| d.with_timezone(&chrono::Utc))
+                .unwrap_or_else(|_| chrono::Utc::now());
+            let source_str: String = row.get(2)?;
+            let source = if source_str == "hook" {
+                LogSource::Hook
+            } else {
+                LogSource::Jsonl
+            };
+            Ok(LogEntry {
+                session_id: row.get(0)?,
+                timestamp,
+                source,
+                kind: row.get(3)?,
+                summary: row.get(4)?,
+                details: row.get(5)?,
+            })
+        })?;
+        let mut out: Vec<LogEntry> = rows.collect::<Result<Vec<_>>>()?;
+        out.reverse();
+        Ok(out)
     }
 
     /// Per-day usage between two YYYY-MM-DD dates, inclusive on both ends.
