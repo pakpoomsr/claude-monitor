@@ -20,7 +20,7 @@ use tauri::{
 };
 use tokio::sync::Mutex;
 
-use crate::agents::{AgentRegistry, AgentSettings, AgentSnapshot};
+use crate::agents::{AgentRegistry, AgentSettings, AgentSnapshot, LogEntry};
 use crate::pricing::PricingTable;
 
 pub struct AppState {
@@ -90,6 +90,38 @@ async fn get_agent(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<AgentSnapshot>, String> {
     Ok(state.registry.snapshot_one(&session_id))
+}
+
+#[tauri::command]
+async fn get_agent_events(
+    session_id: String,
+    limit: Option<usize>,
+    include_history: Option<bool>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<LogEntry>, String> {
+    let cap = limit.unwrap_or(200);
+    let ring = state.registry.events_for(&session_id, cap);
+
+    // Live ring already saturates the window, OR the caller opted out of
+    // SQLite — return the ring as-is. SQLite is a strict superset of the
+    // ring (both fed by the same `record()` call), so when the ring has
+    // capacity we top up from SQLite which has older entries the ring
+    // already evicted.
+    if !include_history.unwrap_or(true) || ring.len() >= cap {
+        return Ok(ring);
+    }
+
+    let history = {
+        let db = state.db.lock().await;
+        db.events_for(&session_id, cap).map_err(|e| e.to_string())?
+    };
+    // SQLite is canonical when present — it contains everything currently
+    // in the ring plus the older history that already aged out.
+    if history.is_empty() {
+        Ok(ring)
+    } else {
+        Ok(history)
+    }
 }
 
 #[tauri::command]
@@ -311,8 +343,9 @@ fn main() {
             // in ~/.claude/settings.json pointing at the live port.
             let app_handle = app.handle().clone();
             let registry_hooks = registry.clone();
+            let db_hooks = db.clone();
             tauri::async_runtime::spawn(async move {
-                match hooks::spawn(app_handle.clone(), registry_hooks).await {
+                match hooks::spawn(app_handle.clone(), registry_hooks, db_hooks).await {
                     Ok(server) => {
                         if let Some(state) = app_handle.try_state::<AppState>() {
                             *state.hook_server.write() = Some(server.clone());
@@ -381,6 +414,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_agents,
             get_agent,
+            get_agent_events,
             get_agent_settings,
             set_agent_settings,
             get_daily_summary,

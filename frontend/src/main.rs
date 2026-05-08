@@ -3,13 +3,19 @@ mod tauri_bridge;
 mod types;
 
 use leptos::prelude::*;
+use std::collections::{HashMap, VecDeque};
 
 use components::{
     agent_detail::AgentDetail, agent_grid::AgentGrid, api_usage_panel::ApiUsagePanel,
     settings::SettingsPanel, sponsor::SponsorPanel, usage_panel::UsagePanel,
 };
 use tauri_bridge::{invoke_no_args, listen};
-use types::{apply_filter, build_groups, AgentGroup, AgentSnapshot, AgentStatus, CurrencyState, Filter, HooksStatus, PricingTable};
+use types::{apply_filter, build_groups, AgentGroup, AgentSnapshot, AgentStatus, CurrencyState, Filter, HooksStatus, LogEntry, PricingTable};
+
+/// Per-session ring buffer of streamed log entries. Mirrors the backend
+/// `EVENT_RING_CAP` so a long-running session can't grow this unbounded.
+pub type EventLogMap = HashMap<String, VecDeque<LogEntry>>;
+const FRONTEND_RING_CAP: usize = 500;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -97,6 +103,22 @@ fn App() -> impl IntoView {
         if let Ok(c) = invoke_no_args::<CurrencyState>("get_currency_state").await {
             currency.set(c);
         }
+    });
+
+    // Per-session event log buckets. Populated by the `agent-event` listener
+    // and the on-selection backfill effect in AgentDetail. Kept in context so
+    // the detail pane (a leaf) can read/write without prop drilling.
+    let event_log: RwSignal<EventLogMap> = RwSignal::new(HashMap::new());
+    provide_context(event_log);
+
+    listen::<LogEntry, _>("agent-event", move |entry| {
+        event_log.update(|m| {
+            let q = m.entry(entry.session_id.clone()).or_default();
+            q.push_back(entry);
+            while q.len() > FRONTEND_RING_CAP {
+                q.pop_front();
+            }
+        });
     });
 
     // Periodically poll hooks_status so the indicator updates when the user

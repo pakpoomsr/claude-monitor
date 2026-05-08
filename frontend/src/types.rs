@@ -183,6 +183,34 @@ pub struct AgentSnapshot {
     pub parent_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LogSource {
+    Jsonl,
+    Hook,
+}
+
+impl LogSource {
+    pub fn css_class(&self) -> &'static str {
+        match self {
+            LogSource::Jsonl => "jsonl",
+            LogSource::Hook => "hook",
+        }
+    }
+}
+
+/// Mirror of `agents::LogEntry`. `timestamp` is RFC3339 (Tauri serializes
+/// `chrono::DateTime<Utc>` as a string).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LogEntry {
+    pub session_id: String,
+    pub timestamp: String,
+    pub source: LogSource,
+    pub kind: String,
+    pub summary: String,
+    pub details: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 pub struct ModelPricing {
     pub base_input: f64,
@@ -261,6 +289,17 @@ pub fn format_datetime(rfc3339: &str) -> String {
     } else {
         format!("{day} {month_name} {year} {time}")
     }
+}
+
+/// Extract `HH:MM:SS` from an RFC3339 timestamp. Returns the input on parse
+/// failure. Used by the per-agent event log where the date is implied.
+pub fn format_log_time(rfc3339: &str) -> String {
+    let Some((_, rest)) = rfc3339.split_once('T') else {
+        return rfc3339.to_string();
+    };
+    rest.chars()
+        .take_while(|c| *c != '.' && *c != '+' && *c != 'Z' && *c != '-')
+        .collect()
 }
 
 /// Format a USD amount in the currently-active currency. Symbol is prefixed

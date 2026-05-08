@@ -202,7 +202,18 @@ async fn process_file_update(
         .map(DateTime::<Utc>::from)
         .unwrap_or_else(|_| Utc::now());
 
-    if let Some(snap) = registry.apply_events(&session_id, &all_events, activity_at, parent_id.clone()) {
+    let (maybe_snap, log_entries) =
+        registry.apply_events(&session_id, &all_events, activity_at, parent_id.clone());
+    for entry in &log_entries {
+        let _ = app.emit("agent-event", entry);
+    }
+    if !log_entries.is_empty() {
+        let mut db = db.lock().await;
+        if let Err(e) = db.insert_events(&log_entries) {
+            eprintln!("[claude-monitor] event log persist failed: {e}");
+        }
+    }
+    if let Some(snap) = maybe_snap {
         if snap.input_tokens > 0 || snap.output_tokens > 0 {
             let session = Session {
                 id: snap.session_id.clone(),

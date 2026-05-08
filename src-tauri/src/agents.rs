@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
@@ -9,6 +9,51 @@ use tokio::time;
 
 use crate::parser::ClaudeEvent;
 use crate::pricing::{self, PricingTable};
+
+/// Ring buffer cap per agent for the in-memory event log. ~500 entries at
+/// ~300 bytes each ≈ 150 KB per agent; 50 active agents ≈ 7.5 MB worst case.
+const EVENT_RING_CAP: usize = 500;
+/// Maximum chars retained for an event summary line.
+const SUMMARY_CHAR_CAP: usize = 500;
+/// Maximum chars retained for an event details body.
+const DETAILS_CHAR_CAP: usize = 4096;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LogSource {
+    Jsonl,
+    Hook,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogEntry {
+    pub session_id: String,
+    pub timestamp: DateTime<Utc>,
+    pub source: LogSource,
+    /// e.g. "AssistantText", "ToolUseStart", "Hook:PreToolUse".
+    pub kind: String,
+    /// Single-line display string, truncated at SUMMARY_CHAR_CAP chars.
+    pub summary: String,
+    /// Optional longer body, truncated at DETAILS_CHAR_CAP chars.
+    pub details: Option<String>,
+}
+
+fn truncate_chars(s: &str, cap: usize) -> String {
+    let mut count = 0;
+    let mut end = s.len();
+    for (i, _) in s.char_indices() {
+        if count == cap {
+            end = i;
+            break;
+        }
+        count += 1;
+    }
+    if end < s.len() {
+        format!("{}…", &s[..end])
+    } else {
+        s.to_string()
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -106,6 +151,23 @@ struct AgentInner {
     /// Last time a Claude Code hook event updated this agent. When recent,
     /// hooks are authoritative.
     last_hook_at: Option<DateTime<Utc>>,
+    /// Bounded ring buffer of narrative events for the live detail-pane log.
+    /// Newest at the back. Cap is `EVENT_RING_CAP`.
+    events: VecDeque<LogEntry>,
+}
+
+impl AgentInner {
+    /// Push a log entry to the ring (evicting head when full) AND append it
+    /// to `out` so the caller can fan out the same entry to subscribers
+    /// (Tauri emit, SQLite persistence, etc.). Single source of truth for
+    /// event capture.
+    fn record(&mut self, entry: LogEntry, out: &mut Vec<LogEntry>) {
+        if self.events.len() >= EVENT_RING_CAP {
+            self.events.pop_front();
+        }
+        self.events.push_back(entry.clone());
+        out.push(entry);
+    }
 }
 
 pub struct AgentRegistry {
@@ -157,7 +219,22 @@ impl AgentRegistry {
         *self.settings.write() = new_settings;
     }
 
-    /// Apply parsed events from a single session, return the new snapshot.
+    /// Most-recent N entries from a session's ring buffer (oldest first,
+    /// newest last). Returns empty if the agent isn't tracked.
+    pub fn events_for(&self, session_id: &str, limit: usize) -> Vec<LogEntry> {
+        self.agents
+            .read()
+            .get(session_id)
+            .map(|a| {
+                let len = a.events.len();
+                let start = len.saturating_sub(limit);
+                a.events.iter().skip(start).cloned().collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Apply parsed events from a single session, return the new snapshot
+    /// plus any narrative log entries captured during processing.
     /// `at` is the timestamp to attribute the activity to — pass file mtime
     /// for an initial scan of an existing JSONL file (so old sessions don't
     /// look fresh), pass `Utc::now()` for live updates.
@@ -167,9 +244,10 @@ impl AgentRegistry {
         events: &[ClaudeEvent],
         at: DateTime<Utc>,
         parent_id: Option<String>,
-    ) -> Option<AgentSnapshot> {
+    ) -> (Option<AgentSnapshot>, Vec<LogEntry>) {
+        let mut log_out: Vec<LogEntry> = Vec::new();
         if events.is_empty() {
-            return None;
+            return (None, log_out);
         }
 
         let settings = self.settings.read().clone();
@@ -203,6 +281,7 @@ impl AgentRegistry {
             text_idle_deadline: None,
             awaiting_user: false,
             last_hook_at: None,
+            events: VecDeque::new(),
         });
 
         // Hook authority: if a hook event has fired for this agent within
@@ -225,6 +304,9 @@ impl AgentRegistry {
                     if !project.is_empty() {
                         agent.snapshot.project = project.clone();
                     }
+                    // Skipped from log — `cwd` appears on every JSONL record so
+                    // SessionStart fires per-line; logging it would drown the
+                    // narrative stream.
                 }
                 ClaudeEvent::Usage { usage, model } => {
                     agent.snapshot.input_tokens += usage.input;
@@ -245,6 +327,7 @@ impl AgentRegistry {
                     };
                     let p = pricing_table.pricing_for(model_for_cost);
                     agent.snapshot.cost_usd += pricing::estimate_cost(usage, &p);
+                    // Skipped from log — Usage is an aggregate counter, not narrative.
                 }
                 ClaudeEvent::AssistantText { text } => {
                     let trimmed: String = text.chars().take(preview_chars).collect();
@@ -256,6 +339,23 @@ impl AgentRegistry {
                             agent.text_idle_deadline = Some(at + text_idle);
                         }
                     }
+                    let summary = truncate_chars(text, SUMMARY_CHAR_CAP);
+                    let details = if text.chars().count() > SUMMARY_CHAR_CAP {
+                        Some(truncate_chars(text, DETAILS_CHAR_CAP))
+                    } else {
+                        None
+                    };
+                    agent.record(
+                        LogEntry {
+                            session_id: session_id.to_string(),
+                            timestamp: at,
+                            source: LogSource::Jsonl,
+                            kind: "AssistantText".to_string(),
+                            summary,
+                            details,
+                        },
+                        &mut log_out,
+                    );
                 }
                 ClaudeEvent::ToolUseStart { tool, id } => {
                     if !hooks_authoritative {
@@ -272,8 +372,25 @@ impl AgentRegistry {
                         );
                     }
                     agent.snapshot.current_tool = Some(tool.clone());
+                    agent.record(
+                        LogEntry {
+                            session_id: session_id.to_string(),
+                            timestamp: at,
+                            source: LogSource::Jsonl,
+                            kind: "ToolUseStart".to_string(),
+                            summary: truncate_chars(tool, SUMMARY_CHAR_CAP),
+                            details: Some(id.clone()),
+                        },
+                        &mut log_out,
+                    );
                 }
                 ClaudeEvent::ToolUseEnd { id } => {
+                    // Resolve tool name BEFORE removing from pending_tools.
+                    let tool_name = agent
+                        .pending_tools
+                        .get(id)
+                        .map(|t| t.name.clone())
+                        .unwrap_or_default();
                     if !hooks_authoritative {
                         agent.pending_tools.remove(id);
                         if agent.pending_tools.is_empty() {
@@ -282,6 +399,21 @@ impl AgentRegistry {
                             agent.snapshot.current_tool = Some(t.name.clone());
                         }
                     }
+                    agent.record(
+                        LogEntry {
+                            session_id: session_id.to_string(),
+                            timestamp: at,
+                            source: LogSource::Jsonl,
+                            kind: "ToolUseEnd".to_string(),
+                            summary: if tool_name.is_empty() {
+                                "tool finished".to_string()
+                            } else {
+                                tool_name
+                            },
+                            details: Some(id.clone()),
+                        },
+                        &mut log_out,
+                    );
                 }
                 ClaudeEvent::TurnEnd => {
                     if !hooks_authoritative {
@@ -289,6 +421,17 @@ impl AgentRegistry {
                         agent.text_idle_deadline = None;
                         agent.awaiting_user = true;
                     }
+                    agent.record(
+                        LogEntry {
+                            session_id: session_id.to_string(),
+                            timestamp: at,
+                            source: LogSource::Jsonl,
+                            kind: "TurnEnd".to_string(),
+                            summary: "turn ended".to_string(),
+                            details: None,
+                        },
+                        &mut log_out,
+                    );
                 }
                 ClaudeEvent::UserMessage => {
                     if !hooks_authoritative {
@@ -296,6 +439,17 @@ impl AgentRegistry {
                         agent.text_idle_deadline = None;
                         agent.awaiting_user = false;
                     }
+                    agent.record(
+                        LogEntry {
+                            session_id: session_id.to_string(),
+                            timestamp: at,
+                            source: LogSource::Jsonl,
+                            kind: "UserMessage".to_string(),
+                            summary: "user message".to_string(),
+                            details: None,
+                        },
+                        &mut log_out,
+                    );
                 }
                 ClaudeEvent::Unknown => {}
             }
@@ -304,14 +458,15 @@ impl AgentRegistry {
         agent.snapshot.last_activity = at;
         agent.snapshot.status = compute_status(agent, &settings, now);
 
-        Some(agent.snapshot.clone())
+        (Some(agent.snapshot.clone()), log_out)
     }
 
-    /// Apply a Claude Code hook event. Returns the new snapshot if the agent
-    /// changed status (or was just created). Hooks are authoritative — they
-    /// set state directly and bump `last_hook_at`, which suppresses JSONL
-    /// inference for `hook_grace_secs`.
-    pub fn apply_hook(&self, ev: &HookEvent) -> Option<AgentSnapshot> {
+    /// Apply a Claude Code hook event. Returns the new snapshot plus any
+    /// log entries emitted. Hooks are authoritative — they set state directly
+    /// and bump `last_hook_at`, which suppresses JSONL inference for
+    /// `hook_grace_secs`.
+    pub fn apply_hook(&self, ev: &HookEvent) -> (Option<AgentSnapshot>, Vec<LogEntry>) {
+        let mut log_out: Vec<LogEntry> = Vec::new();
         let settings = self.settings.read().clone();
         let now = Utc::now();
         let preview_chars = settings.message_preview_chars;
@@ -351,6 +506,7 @@ impl AgentRegistry {
             text_idle_deadline: None,
             awaiting_user: false,
             last_hook_at: Some(now),
+            events: VecDeque::new(),
         });
 
         // Update project lazily if we hadn't seen it yet.
@@ -436,10 +592,52 @@ impl AgentRegistry {
                     "[claude-monitor] hook SessionEnd session={} → {:?}",
                     target_id, agent.snapshot.status
                 );
-                return Some(agent.snapshot.clone());
+                agent.record(
+                    LogEntry {
+                        session_id: target_id.clone(),
+                        timestamp: now,
+                        source: LogSource::Hook,
+                        kind: "Hook:SessionEnd".to_string(),
+                        summary: "session ended".to_string(),
+                        details: None,
+                    },
+                    &mut log_out,
+                );
+                return (Some(agent.snapshot.clone()), log_out);
             }
             _ => {}
         }
+
+        // Capture every hook as a narrative log entry. Summary picks the
+        // most useful field available — tool name, notification subtype, or
+        // a hint of the last assistant text.
+        let summary = ev
+            .tool_name
+            .clone()
+            .or_else(|| ev.notification_type.clone())
+            .or_else(|| {
+                ev.last_assistant_text
+                    .as_ref()
+                    .map(|t| truncate_chars(t, 200))
+            })
+            .unwrap_or_else(|| ev.hook_event_name.clone());
+        let details = ev
+            .last_assistant_text
+            .as_ref()
+            .filter(|t| !t.is_empty())
+            .map(|t| truncate_chars(t, DETAILS_CHAR_CAP))
+            .or_else(|| ev.tool_use_id.clone());
+        agent.record(
+            LogEntry {
+                session_id: target_id.clone(),
+                timestamp: now,
+                source: LogSource::Hook,
+                kind: format!("Hook:{}", ev.hook_event_name),
+                summary: truncate_chars(&summary, SUMMARY_CHAR_CAP),
+                details,
+            },
+            &mut log_out,
+        );
 
         // Optional: capture latest assistant text from PostToolUse / Stop
         // payloads if Claude Code includes them. Best-effort.
@@ -462,7 +660,7 @@ impl AgentRegistry {
             agent.snapshot.status
         );
 
-        Some(agent.snapshot.clone())
+        (Some(agent.snapshot.clone()), log_out)
     }
 
     /// Periodic tick: flip stale agents to Idle, flag long-pending tools as

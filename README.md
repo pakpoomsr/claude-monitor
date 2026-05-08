@@ -141,7 +141,7 @@ cargo tauri build    # release bundle for distribution
 
 | Tab | What you see |
 |---|---|
-| 🟢 **Agents** | Live grid — one tile per Claude session, color-coded by status, with parent / sub-agent grouping. Click a tile for the detail pane (last message, in-flight tool, **5-column cost breakdown** — Base Input / 5m Cache Write / 1h Cache Write / Cache Hit & Refresh / Output — **I/O + cache-hit meters**). |
+| 🟢 **Agents** | Live grid — one tile per Claude session, color-coded by status, with parent / sub-agent grouping. Click a tile for the detail pane (last message, in-flight tool, **5-column cost breakdown** — Base Input / 5m Cache Write / 1h Cache Write / Cache Hit & Refresh / Output — **I/O + cache-hit meters**, plus a live **Recent events** stream of every captured tool call, hook, and assistant turn). |
 | 📊 **Usage** | Local SQLite history — today's tokens & cost, plus a bar chart with **Last 7 days / Last 30 days / Custom date range** selector. Each bar shows the date and cost without hovering. |
 | 🌐 **API** | Optional Anthropic billing-API view (paste a key — kept in memory only, never written to disk). |
 | ⚙️ **Settings** | Hook setup, state-machine thresholds, **editable per-model pricing** (13 SKUs × 5 cells, sourced from Anthropic's pricing page), **display currency** dropdown (10 currencies, FX rates from Frankfurter cached daily). |
@@ -184,7 +184,13 @@ still keeps the dashboard working — just less precisely.
 - **Detail pane** — last assistant message, in-flight tool, **I/O bar**,
   **cache-hit gauge**, **5-row cost table** (Base Input / 5m Cache Write /
   1h Cache Write / Cache Hit & Refresh / Output, with rate × tokens = cost
-  per row, summing to the displayed total), project path
+  per row, summing to the displayed total), project path, and a **Recent
+  events** stream — newest-first scrollable log of every captured tool call,
+  hook event, and assistant turn for the selected agent
+- **Per-agent event log** — bounded ring buffer (500 entries / agent) for
+  live streaming + SQLite-backed history that survives restarts; on
+  selection the pane backfills the last 200 entries and then appends new
+  events as they arrive
 - **Editable per-model pricing** — 13 SKUs from Opus 4.7 down to Haiku 3,
   each with the five Anthropic price columns. Defaults match
   [the official pricing page](https://platform.claude.com/docs/en/about-claude/pricing);
@@ -360,6 +366,7 @@ claude-monitor/
 |---|---|
 | `list_agents` | `Vec<AgentSnapshot>` |
 | `get_agent { sessionId }` | `Option<AgentSnapshot>` |
+| `get_agent_events { sessionId, limit?, includeHistory? }` | `Vec<LogEntry>` (live ring; falls through to SQLite for older entries) |
 | `get_agent_settings` / `set_agent_settings { settings }` | `AgentSettings` |
 | `hooks_status` | `HooksStatus { registered, url, port }` |
 | `register_hooks` / `unregister_hooks` | `HooksStatus` |
@@ -369,7 +376,8 @@ claude-monitor/
 | `get_pricing` / `set_pricing { table }` / `reset_pricing` | `PricingTable` (defaults + overrides) |
 | `get_currency_state` / `set_active_currency { code }` / `refresh_currency_rates` | `CurrencyState { active, list, fetched_at }` |
 
-Events emitted to the frontend: `agent-status`, `agent-waiting`.
+Events emitted to the frontend: `agent-status`, `agent-waiting`, `agent-event`
+(per-entry payload for the live event log).
 
 External links from the Sponsor tab go through the `plugin:opener|open_url`
 command (provided by `tauri-plugin-opener`); the URL allowlist lives in
@@ -427,6 +435,7 @@ to talk.
 
 Recently shipped:
 
+- [x] Per-agent live event log in the detail pane (ring buffer + SQLite history; `agent-event` Tauri stream)
 - [x] Editable per-model pricing (13 SKUs × 5 columns)
 - [x] Currency conversion (Frankfurter, 10 currencies)
 - [x] Custom date-range usage chart (Last 7d / 30d / Custom)

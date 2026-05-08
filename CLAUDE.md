@@ -40,26 +40,26 @@ After a backend change, smoke-test with `timeout 25 cargo tauri dev --no-watch` 
 | File | Responsibility |
 |---|---|
 | `main.rs` | Tauri builder, `setup()` wiring, command registration, tray. Loads pricing overrides + refreshes currency cache on startup. |
-| `agents.rs` | **The heart.** `AgentRegistry`, `AgentSnapshot`, state machine (`apply_events`, `apply_hook`, `tick`, `compute_status`), `HookEvent`. Holds a live `PricingTable` used by the Usage event handler to compute cost. |
-| `hooks.rs` | Axum HTTP server bound to `127.0.0.1:0` (random ephemeral port). Single `POST /h` endpoint with `X-Auth` header. Constant-time token compare via `subtle`; 64 KB body limit; payload contents never logged. |
+| `agents.rs` | **The heart.** `AgentRegistry`, `AgentSnapshot`, state machine (`apply_events`, `apply_hook`, `tick`, `compute_status`), `HookEvent`, `LogEntry` / `LogSource`. Holds a live `PricingTable` used by the Usage event handler to compute cost. Each `AgentInner` carries a 500-entry `VecDeque<LogEntry>` ring buffer fed through the single `AgentInner::record()` helper — narrative filter and ring eviction live there, never replicated at call sites. `apply_events` and `apply_hook` return `(Option<AgentSnapshot>, Vec<LogEntry>)`; callers fan the entries out to `app.emit("agent-event", ...)` and `db.insert_events(...)`. |
+| `hooks.rs` | Axum HTTP server bound to `127.0.0.1:0` (random ephemeral port). Single `POST /h` endpoint with `X-Auth` header. Constant-time token compare via `subtle`; 64 KB body limit; payload contents never logged. `ServerState` carries the `Arc<Mutex<Database>>` so hook-driven `LogEntry`s persist alongside the live emit. |
 | `settings_writer.rs` | Reads/registers/unregisters our hook entries in `~/.claude/settings.json`. Tag `_claude_monitor: true` on every entry we own; backup to `.bak` on first write; symlink-safe atomic writes via `OpenOptions::create_new(true)` + rename; 0600 perms on Unix. |
 | `prefs.rs` | Persistent app prefs at `<data_local_dir>/claude-monitor/prefs.json`. Fields: `hooks_enabled`, `pricing_overrides` (HashMap keyed by `PricingEntry.id`), `pricing_currency` (ISO 4217), `currency_cache` (Frankfurter rates + fetched_at). |
 | `watcher.rs` | `notify`-based JSONL watcher. Per-file byte offset for incremental reads. **8 MB per-line cap** (resyncs on next newline). Detects sub-agent paths (`<parent_uuid>/subagents/agent-X.jsonl`) and passes `parent_id` to `apply_events` only when the parent component is UUID-shaped. |
 | `parser.rs` | Line → `Vec<ClaudeEvent>`. Handles `system/turn_duration`, content blocks (text/tool_use/tool_result), `usage` block (5 token fields including the nested `cache_creation.ephemeral_5m_input_tokens` / `_1h_input_tokens` buckets). |
 | `pricing.rs` | `ModelPricing` (5 fields), `TokenUsage` (5 fields), `PricingTable` (Vec of `PricingEntry`), `default_pricing_table()` with all 13 SKUs, `merge_overrides`, `estimate_cost`. **Single source of truth** for cost math — never duplicate this logic in agents.rs. |
 | `currency.rs` | Frankfurter HTTP client + curated 10-currency list (USD/EUR/GBP/JPY/CNY/THB/SGD/INR/KRW/AUD). `is_stale` returns true after 24h. |
-| `db.rs` | SQLite (rusqlite, bundled) — Usage-tab history only. Schema migration adds `cache_write_5m_tokens`, `cache_write_1h_tokens`, `cache_read_tokens` if missing; legacy `cache_tokens` column kept as the sum. |
+| `db.rs` | SQLite (rusqlite, bundled). Two tables: `sessions` (Usage-tab history) and `agent_events` (per-agent event log history). Schema migration adds `cache_write_5m_tokens`, `cache_write_1h_tokens`, `cache_read_tokens` to `sessions` if missing; legacy `cache_tokens` column kept as the sum. `agent_events` is indexed `(session_id, ts DESC)` and written transactionally via `insert_events`. |
 | `api.rs` | Anthropic billing API client (optional, key in memory only) |
 
 ### Frontend — `frontend/src/`
 
 | File | Responsibility |
 |---|---|
-| `main.rs` | App shell, 5-tab routing, header indicators, signal wiring, polls `hooks_status` every 2s. **Provides global `RwSignal<PricingTable>` and `RwSignal<CurrencyState>` via `provide_context`** — leaf components consume via `use_context`. |
+| `main.rs` | App shell, 5-tab routing, header indicators, signal wiring, polls `hooks_status` every 2s. **Provides global `RwSignal<PricingTable>`, `RwSignal<CurrencyState>`, and `RwSignal<EventLogMap>` (alias for `HashMap<session_id, VecDeque<LogEntry>>`, capped at 500 per session to mirror the backend ring) via `provide_context`** — leaf components consume via `use_context`. Listens for `agent-status`, `agent-waiting`, and `agent-event` Tauri events. |
 | `tauri_bridge.rs` | Thin `wasm-bindgen` wrappers around `window.__TAURI__.core.invoke` and `__TAURI__.event.listen`. Defensive — `is_tauri()` guards no-op when run outside the webview. |
-| `types.rs` | All shared types: `AgentStatus`, `AgentSnapshot` (5 cache fields), `AgentSettings`, `AgentGroup`, `Filter`, `HooksStatus`, `ModelPricing`, `PricingEntry`, `PricingTable`, `CurrencyInfo`, `CurrencyState`. Helpers: `build_groups`, `apply_filter`, `format_money` (thousand-separator commas, currency-aware), `format_date_short` ("DD MMM YY"), `format_datetime` ("DD MMM YYYY HH:MM:SS"). |
+| `types.rs` | All shared types: `AgentStatus`, `AgentSnapshot` (5 cache fields), `AgentSettings`, `AgentGroup`, `Filter`, `HooksStatus`, `ModelPricing`, `PricingEntry`, `PricingTable`, `CurrencyInfo`, `CurrencyState`, `LogEntry`, `LogSource`. Helpers: `build_groups`, `apply_filter`, `format_money` (thousand-separator commas, currency-aware), `format_date_short` ("DD MMM YY"), `format_datetime` ("DD MMM YYYY HH:MM:SS"), `format_log_time` ("HH:MM:SS" only — used inside the per-agent event log where the date is implied). |
 | `components/agent_grid.rs` | Section renderer — parent tile + indented sub-agent tiles inside a `.group` card whose left edge color = aggregate status. Tile cost respects active currency. |
-| `components/agent_detail.rs` | Side pane shown when a tile is selected. **5-row cost table** (Base Input / 5m Cache Write / 1h Cache Write / Cache Hit & Refresh / Output) reading live from the pricing context. |
+| `components/agent_detail.rs` | Side pane shown when a tile is selected. **5-row cost table** (Base Input / 5m Cache Write / 1h Cache Write / Cache Hit & Refresh / Output) reading live from the pricing context. **Recent events** section: `Effect` backfills the last 200 entries via `get_agent_events` on first selection (untracked read of the log map so the effect doesn't re-fire on every streamed event); a `For` over the per-session `VecDeque<LogEntry>` from the context renders newest-first. |
 | `components/usage_panel.rs` | SQLite-backed local usage view. Range pills (Last 7d / 30d / Custom) + two `<input type="date">` for custom range; bars show date and cost without hover. |
 | `components/api_usage_panel.rs` | Anthropic billing API view |
 | `components/settings.rs` | Real-time hooks toggle, state-machine thresholds, **editable pricing table** (13 rows × 5 cells, save-on-blur), **display currency** dropdown + manual refresh. |
@@ -150,6 +150,47 @@ When Anthropic publishes new prices or a new model SKU:
 4. Don't rewrite the cost math anywhere else — `pricing::estimate_cost(usage, &pricing)` is the only function that knows. The frontend's per-row cost in `agent_detail.rs` does its own breakdown for display, but the `cost_usd` written to SQLite and shown in summaries comes from the backend.
 5. The five token counters in `AgentSnapshot` — `input_tokens`, `output_tokens`, `cache_write_5m_tokens`, `cache_write_1h_tokens`, `cache_read_tokens` — are independent (no overlap). The legacy `cache_tokens = sum(three cache fields)` is kept on the snapshot and DB row for any consumer that wants a single combined cache figure.
 
+## Working on the event log
+
+The "Recent events" detail-pane stream is fed by a per-agent log pipeline:
+
+```
+ClaudeEvent / HookEvent
+        │
+        ▼
+  AgentInner::record()              ← single capture point + narrative filter
+        │
+        ├──► VecDeque<LogEntry> (cap 500, ring evicts head)
+        └──► returned Vec<LogEntry>
+                  │
+                  ├──► app.emit("agent-event", entry)   ← live UI
+                  └──► db.insert_events(&entries)        ← SQLite history
+```
+
+Capture rules:
+
+- **Narrative filter** lives only inside the match arms of `apply_events` / `apply_hook` that opt into `record(...)`. JSONL `Usage` and `Unknown` are intentionally skipped (aggregate counters / parse misses, not narrative). `SessionStart` is also skipped because the parser emits one per JSONL line — logging it would drown the stream. Every `HookEvent` is captured (kind = `format!("Hook:{}", ev.hook_event_name)`).
+- **Don't add an event-emit path inside the 1Hz `tick()` loop** — tick mutates flags only, not history. Any capture there would duplicate entries.
+- **Don't bypass the ring cap** — `record()` is the only writer; `events: VecDeque<LogEntry>` is private to `AgentInner`.
+- **Char caps**: `summary` truncated to 500 chars (with ellipsis), `details` to 4096. Matters when an assistant message or hook payload is unusually large — the upstream 8 MB JSONL line cap and 64 KB hook body cap would otherwise let a single entry blow the ring's memory budget.
+
+Read API:
+
+- **`AgentRegistry::events_for(session_id, limit)`** returns the most-recent N from the in-memory ring, oldest first.
+- **`Database::events_for(session_id, limit)`** returns the same shape from SQLite (canonical superset; everything in the ring is also persisted).
+- **`get_agent_events` Tauri command** combines both: live ring saturating the window short-circuits; otherwise it returns the SQLite history (which already contains the ring contents). Pass `includeHistory: false` to skip SQLite.
+
+Frontend:
+
+- The `agent-event` listener in `frontend/src/main.rs` appends each entry to `RwSignal<EventLogMap>` (per-session deque, frontend ring cap = 500 mirrors the backend).
+- `agent_detail.rs` reads the log map via `use_context::<RwSignal<EventLogMap>>()`. Backfill is gated on the bucket being empty (`with_untracked` so the backfill effect doesn't re-fire on every streamed event).
+
+Adding a new captured event type (e.g. you start consuming `assistant/thinking` blocks):
+
+1. Add the enum variant in `parser.rs` (or a new `HookEvent` field).
+2. Add a match arm in `apply_events` / `apply_hook` that calls `agent.record(LogEntry { ... }, &mut log_out)` — pick a stable `kind` string (e.g. `"AssistantThinking"`).
+3. No frontend changes needed: the existing `<For>` renders any kind. If you want kind-specific styling, add a CSS variant `.event-row--<kind>` keyed off `e.source.css_class()` or extend with a new class on the row.
+
 ## Working on currency
 
 - **Adding a currency**: extend `currency::SUPPORTED` (the curated 10-currency list) with `(code, symbol)`. Frankfurter exposes ~30 currencies; we filter to this list to keep the dropdown manageable. The frontend `format_money` uses the symbol; if the symbol is ambiguous (e.g. multiple `$` currencies) consider a code-only display instead.
@@ -174,6 +215,7 @@ When Anthropic publishes new prices or a new model SKU:
 - We aren't currently consuming `assistant/thinking` content blocks (extended-thinking output) — only `text` and `tool_use`.
 - `apply_hook`'s field names follow the Claude Code docs (`tool_use_id`, `agent_id`, etc.). If real payloads differ, parse errors log to size only (never contents) — search for `"hook payload parse error"` in the terminal output.
 - Historical SQLite rows written before the cache-split migration only have a single `cache_tokens` figure; new rows populate all four cache columns. The Usage tab is OK with this because it sums for totals, but per-bucket charts on old data will show zero.
+- The `agent_events` table grows unboundedly — there's no automatic pruning. For active users this is fine (a few KB per session), but if you ship a long-running install consider adding a `DELETE WHERE ts < datetime('now', '-30 days')` sweep on startup.
 - File permissions hardening (0600 on db/prefs/.bak) is Unix-only. Windows relies on the per-user `%LocalAppData%` ACLs that already restrict cross-user reads.
 - Currency rates fall back to 1.0 if the Frankfurter cache is empty AND the startup fetch failed — costs will appear in USD even if a different currency is selected. Force refresh from Settings once you're online.
 
