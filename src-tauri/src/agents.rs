@@ -36,6 +36,12 @@ pub struct LogEntry {
     pub summary: String,
     /// Optional longer body, truncated at DETAILS_CHAR_CAP chars.
     pub details: Option<String>,
+    /// Tool-specific input arg captured from the hook payload. Currently
+    /// populated only for `Hook:PreToolUse` rows where `tool_name == "Bash"`
+    /// — stores the raw `command` string (truncated). Powers the Usage tab's
+    /// Shell-command breakdown. NULL for everything else.
+    #[serde(default)]
+    pub tool_params: Option<String>,
 }
 
 fn truncate_chars(s: &str, cap: usize) -> String {
@@ -367,6 +373,7 @@ impl AgentRegistry {
                             kind: "AssistantText".to_string(),
                             summary,
                             details,
+                            tool_params: None,
                         },
                         &mut log_out,
                     );
@@ -394,6 +401,7 @@ impl AgentRegistry {
                             kind: "ToolUseStart".to_string(),
                             summary: truncate_chars(tool, SUMMARY_CHAR_CAP),
                             details: Some(id.clone()),
+                            tool_params: None,
                         },
                         &mut log_out,
                     );
@@ -425,6 +433,7 @@ impl AgentRegistry {
                                 tool_name
                             },
                             details: Some(id.clone()),
+                            tool_params: None,
                         },
                         &mut log_out,
                     );
@@ -443,6 +452,7 @@ impl AgentRegistry {
                             kind: "TurnEnd".to_string(),
                             summary: "turn ended".to_string(),
                             details: None,
+                            tool_params: None,
                         },
                         &mut log_out,
                     );
@@ -461,6 +471,7 @@ impl AgentRegistry {
                             kind: "UserMessage".to_string(),
                             summary: "user message".to_string(),
                             details: None,
+                            tool_params: None,
                         },
                         &mut log_out,
                     );
@@ -614,6 +625,7 @@ impl AgentRegistry {
                         kind: "Hook:SessionEnd".to_string(),
                         summary: "session ended".to_string(),
                         details: None,
+                        tool_params: None,
                     },
                     &mut log_out,
                 );
@@ -641,6 +653,21 @@ impl AgentRegistry {
             .filter(|t| !t.is_empty())
             .map(|t| truncate_chars(t, DETAILS_CHAR_CAP))
             .or_else(|| ev.tool_use_id.clone());
+        // For Bash PreToolUse hooks, persist the raw `command` arg so the
+        // Usage tab's Shell-command breakdown can bucket invocations.
+        // Truncated to 2 KB — plenty for any normal CLI invocation, bounded
+        // for `agent_events` storage.
+        let tool_params = if ev.hook_event_name == "PreToolUse"
+            && ev.tool_name.as_deref() == Some("Bash")
+        {
+            ev.tool_input
+                .as_ref()
+                .and_then(|v| v.get("command"))
+                .and_then(|v| v.as_str())
+                .map(|s| truncate_chars(s, 2048))
+        } else {
+            None
+        };
         agent.record(
             LogEntry {
                 session_id: target_id.clone(),
@@ -649,6 +676,7 @@ impl AgentRegistry {
                 kind: format!("Hook:{}", ev.hook_event_name),
                 summary: truncate_chars(&summary, SUMMARY_CHAR_CAP),
                 details,
+                tool_params,
             },
             &mut log_out,
         );

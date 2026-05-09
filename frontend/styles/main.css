@@ -258,6 +258,18 @@ code, pre, .mono {
     box-shadow: var(--glow-accent);
     flex-shrink: 0;
 }
+.logo-version {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    -webkit-text-fill-color: var(--muted);
+    background: none;
+    padding: 2px 6px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    font-variant-numeric: tabular-nums;
+}
 
 .stats {
     display: flex;
@@ -1704,4 +1716,97 @@ code, pre, .mono {
 .diff-line--add { background: rgba(46, 160, 67, 0.12); color: #2ea043; }
 .diff-line--del { background: rgba(208, 70, 70, 0.12); color: #d04646; }
 .diff-line--ctx { color: var(--text-soft); }
+
+/* =========================================================================
+   Usage tab breakdowns — project / model / tools / shell / activity.
+   Compact horizontal-bar list. Share % drives bar width; cost+count sit on
+   the right with tabular numerics so the columns stack visually.
+   ========================================================================= */
+.breakdown-section {
+    margin-top: 22px;
+}
+.breakdown-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin: 0 0 8px;
+}
+.breakdown-header h3 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--text);
+}
+
+.breakdown-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    background: var(--tile-bg);
+    border: 1px solid var(--line);
+    border-radius: var(--tile-radius);
+    padding: 8px 10px;
+}
+.breakdown-empty {
+    padding: 12px;
+    border: 1px dashed var(--line);
+    border-radius: var(--tile-radius);
+    text-align: center;
+    font-size: 12px;
+}
+
+.breakdown-row {
+    display: grid;
+    grid-template-columns: minmax(160px, 1.4fr) minmax(90px, 2fr) auto auto;
+    align-items: center;
+    gap: 12px;
+    padding: 4px 6px;
+    font-size: 12px;
+    border-radius: 4px;
+}
+.breakdown-row:hover {
+    background: var(--bg-soft);
+}
+.breakdown-name {
+    color: var(--text);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.breakdown-bar {
+    height: 6px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.breakdown-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--coral));
+    transition: width 220ms ease;
+}
+.breakdown-num {
+    color: var(--text-soft);
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    white-space: nowrap;
+}
+.breakdown-num--cost {
+    color: var(--text);
+    font-weight: 600;
+    min-width: 80px;
+    text-align: right;
+}
+.breakdown-num--cost.is-approx {
+    color: var(--text-soft);
+    font-style: italic;
+}
+
+.breakdown-more {
+    margin-top: 6px;
+    text-align: right;
+}
 

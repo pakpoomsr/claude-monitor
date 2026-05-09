@@ -258,6 +258,33 @@ async fn get_usage_range(
         .map_err(|e| e.to_string())
 }
 
+/// One-shot Usage tab payload: totals + per-day chart + 5 breakdowns.
+/// Replaces the per-section round-trips so a date-range change is one call.
+#[tauri::command]
+async fn get_usage_breakdown(
+    start_date: String,
+    end_date: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<db::UsageBreakdown, String> {
+    let db = state.db.lock().await;
+    let total = db.get_totals_in_range(&start_date, &end_date).map_err(|e| e.to_string())?;
+    let by_day = db.get_usage_range(&start_date, &end_date).map_err(|e| e.to_string())?;
+    let by_project = db.get_breakdown_by_project(&start_date, &end_date).map_err(|e| e.to_string())?;
+    let by_model = db.get_breakdown_by_model(&start_date, &end_date).map_err(|e| e.to_string())?;
+    let by_tool = db.get_breakdown_by_tool(&start_date, &end_date).map_err(|e| e.to_string())?;
+    let by_shell = db.get_breakdown_by_shell(&start_date, &end_date).map_err(|e| e.to_string())?;
+    let by_activity = db.get_breakdown_by_activity(&start_date, &end_date).map_err(|e| e.to_string())?;
+    Ok(db::UsageBreakdown {
+        total,
+        by_day,
+        by_project,
+        by_model,
+        by_tool,
+        by_shell,
+        by_activity,
+    })
+}
+
 #[tauri::command]
 async fn set_api_key(
     key: String,
@@ -507,6 +534,7 @@ fn main() {
             get_sessions,
             get_weekly_chart,
             get_usage_range,
+            get_usage_breakdown,
             set_api_key,
             fetch_api_usage,
             hooks_status,

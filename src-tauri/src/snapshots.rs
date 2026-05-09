@@ -366,6 +366,7 @@ fn emit_snapshot_event(
         kind: kind.to_string(),
         summary: short_path(&row.file_path),
         details: Some(format!("snapshot_id={} phase={} {}b", row.id, row.phase, row.size_bytes)),
+        tool_params: None,
     };
     registry.record_external(&row.session_id, entry.clone());
     let _ = app.emit("agent-event", &entry);
@@ -568,6 +569,7 @@ pub async fn restore(
             pre_restore.id,
             if deleted_target { " deleted" } else { "" }
         )),
+        tool_params: None,
     };
     registry.record_external(&row.session_id, entry.clone());
     let _ = app.emit("agent-event", &entry);

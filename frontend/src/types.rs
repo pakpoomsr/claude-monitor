@@ -209,6 +209,10 @@ pub struct LogEntry {
     pub kind: String,
     pub summary: String,
     pub details: Option<String>,
+    /// Tool-specific input arg (currently only Bash `command`). Powers the
+    /// Usage-tab Shell-command breakdown. Default-None for old rows.
+    #[serde(default)]
+    pub tool_params: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
@@ -406,6 +410,40 @@ pub struct DayStats {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cost_usd: f64,
+}
+
+/// Mirror of `db::BreakdownRow`. `count` is sessions for project/model and
+/// events for tool/shell/activity. Cost is real for project/model; for
+/// tool/shell/activity it's an even-split approximation across each session's
+/// events (label as approx in the UI).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BreakdownRow {
+    pub name: String,
+    pub count: i64,
+    pub tokens: i64,
+    pub cost_usd: f64,
+    pub share_pct: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UsageTotals {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_tokens: u64,
+    pub cost_usd: f64,
+    pub session_count: u64,
+    pub event_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UsageBreakdown {
+    pub total: UsageTotals,
+    pub by_day: Vec<DayStats>,
+    pub by_project: Vec<BreakdownRow>,
+    pub by_model: Vec<BreakdownRow>,
+    pub by_tool: Vec<BreakdownRow>,
+    pub by_shell: Vec<BreakdownRow>,
+    pub by_activity: Vec<BreakdownRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
