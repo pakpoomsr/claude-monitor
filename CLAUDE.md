@@ -48,7 +48,7 @@ After a backend change, smoke-test with `timeout 25 cargo tauri dev --no-watch` 
 | `parser.rs` | Line → `Vec<ClaudeEvent>`. Handles `system/turn_duration`, content blocks (text/tool_use/tool_result), `usage` block (5 token fields including the nested `cache_creation.ephemeral_5m_input_tokens` / `_1h_input_tokens` buckets). |
 | `pricing.rs` | `ModelPricing` (5 fields), `TokenUsage` (5 fields), `PricingTable` (Vec of `PricingEntry`), `default_pricing_table()` with all 13 SKUs, `merge_overrides`, `estimate_cost`. **Single source of truth** for cost math — never duplicate this logic in agents.rs. |
 | `currency.rs` | Frankfurter HTTP client + curated 10-currency list (USD/EUR/GBP/JPY/CNY/THB/SGD/INR/KRW/AUD). `is_stale` returns true after 24h. |
-| `db.rs` | SQLite (rusqlite, bundled). Three tables: `sessions` (Usage-tab history), `agent_events` (per-agent event log history), and `file_snapshots` (History-tab pre/post blobs metadata). Schema migration adds `cache_write_5m_tokens`, `cache_write_1h_tokens`, `cache_read_tokens` to `sessions` if missing; legacy `cache_tokens` column kept as the sum. `agent_events` is indexed `(session_id, ts DESC)` and written transactionally via `insert_events`. `file_snapshots` is indexed `(session_id, ts DESC)` and `(tool_use_id)`. |
+| `db.rs` | SQLite (rusqlite, bundled). Three tables: `sessions` (Usage-tab history), `agent_events` (per-agent event log history; carries `tool_params` for Bash command capture), and `file_snapshots` (History-tab pre/post blobs metadata). Schema migrations are idempotent via `add_column_if_missing(table, name, decl)`. `agent_events` is indexed `(session_id, ts DESC)` and written transactionally via `insert_events`. `file_snapshots` is indexed `(session_id, ts DESC)` and `(tool_use_id)`. Houses the Usage-tab breakdown queries (`get_breakdown_by_*`) and the combined `get_totals_in_range`. |
 | `snapshots.rs` | File snapshot capture/diff/restore subsystem powering the History tab. Single writer to `<data_local>/claude-monitor/snapshots/<session>/`. 1 MB cap per file; restore is reversible via a `pre-restore` snapshot row. Hook-driven — `apply_hook` does not touch this; `hooks::hook_handler` dispatches `capture_pre_edit` / `capture_post_edit` after `apply_hook` returns. |
 | `api.rs` | Anthropic billing API client (optional, key in memory only) |
 
@@ -61,7 +61,7 @@ After a backend change, smoke-test with `timeout 25 cargo tauri dev --no-watch` 
 | `types.rs` | All shared types: `AgentStatus`, `AgentSnapshot` (5 cache fields), `AgentSettings`, `AgentGroup`, `Filter`, `HooksStatus`, `ModelPricing`, `PricingEntry`, `PricingTable`, `CurrencyInfo`, `CurrencyState`, `LogEntry`, `LogSource`. Helpers: `build_groups`, `apply_filter`, `format_money` (thousand-separator commas, currency-aware), `format_date_short` ("DD MMM YY"), `format_datetime` ("DD MMM YYYY HH:MM:SS"), `format_log_time` ("HH:MM:SS" only — used inside the per-agent event log where the date is implied). |
 | `components/agent_grid.rs` | Section renderer — parent tile + indented sub-agent tiles inside a `.group` card whose left edge color = aggregate status. Tile cost respects active currency. |
 | `components/agent_detail.rs` | Side pane shown when a tile is selected. **5-row cost table** (Base Input / 5m Cache Write / 1h Cache Write / Cache Hit & Refresh / Output) reading live from the pricing context. **Recent events** section: `Effect` backfills the last 200 entries via `get_agent_events` on first selection (untracked read of the log map so the effect doesn't re-fire on every streamed event); a `For` over the per-session `VecDeque<LogEntry>` from the context renders newest-first. |
-| `components/usage_panel.rs` | SQLite-backed local usage view. Range pills (Last 7d / 30d / Custom) + two `<input type="date">` for custom range; bars show date and cost without hover. |
+| `components/usage_panel.rs` | SQLite-backed local usage view. Range pills (Last 7d / 30d / Custom) + two `<input type="date">` for custom range; range-aware totals card row, per-day cost bars, and five breakdown sections (Project / Model / Core tools / Shell commands / Activity). Single `get_usage_breakdown` Tauri call per range change. |
 | `components/history_panel.rs` | History tab (issue #3). Sessions grouped by project, expand to a list of edits with timestamp + tool name + file basename. Click an edit → `DiffView` renders the unified diff; **Revert** restores the `pre` snapshot. Listens for `snapshot-restored` Tauri events to refetch. |
 | `components/diff_view.rs` | Pure-CSS unified-diff renderer (`+` green / `-` red / context). Backend produced the unified text via the `similar` crate; this component just splits and styles. |
 | `components/api_usage_panel.rs` | Anthropic billing API view |
@@ -219,6 +219,53 @@ Adding a new file-mutating tool (e.g. you want to capture a future `RewriteFile`
 1. Append the tool name to `snapshots::TRACKED_TOOLS`.
 2. Teach `snapshots::resolve_target_path` to extract the file path from that tool's `tool_input` shape.
 3. (Optional) Add a special-case in `snapshots::capture` if the tool's create/delete semantics differ from `Edit`/`Write`.
+
+## Working on Usage breakdowns
+
+The Usage tab's five breakdown sections (Project / Model / Core tools / Shell commands / Activity) and range-aware totals all flow through one Tauri command:
+
+```
+frontend Effect (start, end change)
+        │
+        ▼
+get_usage_breakdown(startDate, endDate)
+        │
+        ├──► db.get_totals_in_range(...)          ← totals card row
+        ├──► db.get_usage_range(...)              ← per-day bar chart
+        ├──► db.get_breakdown_by_project(...)     ← real cost (sessions)
+        ├──► db.get_breakdown_by_model(...)       ← real cost (sessions)
+        ├──► db.get_breakdown_by_tool(...)        ← approx cost (CTE below)
+        ├──► db.get_breakdown_by_shell(...)       ← approx cost; Rust-side first-token bucketing
+        └──► db.get_breakdown_by_activity(...)    ← approx cost
+```
+
+Approx-cost CTE (used by tool / shell / activity):
+
+```sql
+WITH session_event_n AS (
+    SELECT session_id, COUNT(*) AS n FROM agent_events
+    WHERE date(ts) BETWEEN ?1 AND ?2 GROUP BY session_id
+)
+SELECT <group_col>, COUNT(*), SUM(s.cost_usd / NULLIF(n.n, 0)) AS approx_cost
+FROM agent_events e
+JOIN session_event_n n ON e.session_id = n.session_id
+LEFT JOIN sessions s   ON e.session_id = s.id
+WHERE date(e.ts) BETWEEN ?1 AND ?2 AND <kind filter>
+GROUP BY <group_col>
+```
+
+The session's cost is split evenly across its events. A session with 200 events and $1 of cost contributes $0.005 to each event's approx-cost bucket. The UI labels these rows "approx" because the split is uniform — a single Edit and a single Read inside the same session look equally expensive.
+
+Shell-command bucketing happens in Rust (`db.rs::get_breakdown_by_shell`): the SELECT returns raw `tool_params` strings and the function buckets by the first whitespace-separated token (`git status -s` → `git`). Bash command capture is hook-driven via `apply_hook` writing to `LogEntry.tool_params` for `PreToolUse` + `tool_name == "Bash"`; the column was added by an idempotent migration so old installs upgrade in place.
+
+Adding a new breakdown dimension:
+
+1. Decide whether cost should be real (per-session aggregate) or approx (per-event split). Pick the matching pattern in `db.rs`.
+2. Add a `get_breakdown_by_<dim>(start, end) -> Result<Vec<BreakdownRow>>` method using `with_share_pct(...)`.
+3. Add the field to `db::UsageBreakdown`, `frontend/types.rs::UsageBreakdown`, and the `get_usage_breakdown` Tauri handler.
+4. Add a `<BreakdownSection>` invocation in `usage_panel.rs` with appropriate `count_label` and `CostKind`.
+
+`tool_params` is owner-only on Unix (the SQLite file's 0600 perms) and ACL-restricted on Windows via `%LocalAppData%`. Bash commands can include secrets (env tokens, etc.) — capture is unconditional once hooks are enabled. The only way to disable it today is to leave hooks off. If user-facing privacy ever becomes a feature requirement, gate the `Hook:PreToolUse + Bash` capture path inside `apply_hook` on a new pref flag.
 
 ## Working on currency
 

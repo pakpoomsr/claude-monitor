@@ -62,6 +62,43 @@ pub struct DayStats {
     pub cost_usd: f64,
 }
 
+/// One row in any of the Usage-tab breakdown tables. `count` is sessions for
+/// project/model and events for tool/shell/activity. `cost_usd` is real for
+/// project/model; for tool/shell/activity it's an even-split approximation
+/// (session cost / event count, summed per group).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BreakdownRow {
+    pub name: String,
+    pub count: i64,
+    pub tokens: i64,
+    pub cost_usd: f64,
+    pub share_pct: f64,
+}
+
+/// Range-aware totals shown above the breakdown sections.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct UsageTotals {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_tokens: u64,
+    pub cost_usd: f64,
+    pub session_count: u64,
+    pub event_count: u64,
+}
+
+/// Single payload returned by `get_usage_breakdown` so a range change is one
+/// round-trip instead of six.
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct UsageBreakdown {
+    pub total: UsageTotals,
+    pub by_day: Vec<DayStats>,
+    pub by_project: Vec<BreakdownRow>,
+    pub by_model: Vec<BreakdownRow>,
+    pub by_tool: Vec<BreakdownRow>,
+    pub by_shell: Vec<BreakdownRow>,
+    pub by_activity: Vec<BreakdownRow>,
+}
+
 pub struct Database {
     conn: Connection,
 }
@@ -137,21 +174,26 @@ impl Database {
         // Idempotent migration: add the three split-cache columns if they
         // don't exist yet. Older rows keep `cache_tokens` as the only cache
         // figure; new rows populate both legacy and split columns.
-        self.add_column_if_missing("cache_write_5m_tokens", "INTEGER NOT NULL DEFAULT 0")?;
-        self.add_column_if_missing("cache_write_1h_tokens", "INTEGER NOT NULL DEFAULT 0")?;
-        self.add_column_if_missing("cache_read_tokens", "INTEGER NOT NULL DEFAULT 0")?;
+        self.add_column_if_missing("sessions", "cache_write_5m_tokens", "INTEGER NOT NULL DEFAULT 0")?;
+        self.add_column_if_missing("sessions", "cache_write_1h_tokens", "INTEGER NOT NULL DEFAULT 0")?;
+        self.add_column_if_missing("sessions", "cache_read_tokens", "INTEGER NOT NULL DEFAULT 0")?;
+        // Per-event tool input snapshot. Currently populated for `Bash`
+        // PreToolUse hooks (the raw `command` arg, truncated). Other tool
+        // kinds leave it NULL. Powers the shell-command breakdown.
+        self.add_column_if_missing("agent_events", "tool_params", "TEXT")?;
         Ok(())
     }
 
-    fn add_column_if_missing(&self, name: &str, decl: &str) -> Result<()> {
+    fn add_column_if_missing(&self, table: &str, name: &str, decl: &str) -> Result<()> {
+        let pragma = format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1");
         let exists: bool = self
             .conn
-            .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = ?1")?
+            .prepare(&pragma)?
             .query_row(params![name], |_| Ok(true))
             .unwrap_or(false);
         if !exists {
             self.conn
-                .execute(&format!("ALTER TABLE sessions ADD COLUMN {name} {decl}"), [])?;
+                .execute(&format!("ALTER TABLE {table} ADD COLUMN {name} {decl}"), [])?;
         }
         Ok(())
     }
@@ -291,8 +333,9 @@ impl Database {
         let tx = self.conn.transaction()?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO agent_events (session_id, ts, source, kind, summary, details)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO agent_events
+                    (session_id, ts, source, kind, summary, details, tool_params)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
             for e in entries {
                 let source = match e.source {
@@ -306,6 +349,7 @@ impl Database {
                     e.kind,
                     e.summary,
                     e.details,
+                    e.tool_params,
                 ])?;
             }
         }
@@ -317,7 +361,7 @@ impl Database {
     /// (matching the ring buffer ordering callers expect).
     pub fn events_for(&self, session_id: &str, limit: usize) -> Result<Vec<LogEntry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT session_id, ts, source, kind, summary, details
+            "SELECT session_id, ts, source, kind, summary, details, tool_params
              FROM agent_events
              WHERE session_id = ?1
              ORDER BY ts DESC, id DESC
@@ -341,6 +385,7 @@ impl Database {
                 kind: row.get(3)?,
                 summary: row.get(4)?,
                 details: row.get(5)?,
+                tool_params: row.get(6)?,
             })
         })?;
         let mut out: Vec<LogEntry> = rows.collect::<Result<Vec<_>>>()?;
@@ -529,6 +574,239 @@ impl Database {
         )
     }
 
+    // ---- Usage-tab breakdowns ----
+
+    /// SUM-everything totals over the range. `session_count` filters by
+    /// `sessions.updated_at`; `event_count` filters by `agent_events.ts`.
+    pub fn get_totals_in_range(&self, start: &str, end: &str) -> Result<UsageTotals> {
+        let (input, output, cache, cost, sess): (i64, i64, i64, f64, i64) = self
+            .conn
+            .query_row(
+                "SELECT
+                    COALESCE(SUM(input_tokens), 0),
+                    COALESCE(SUM(output_tokens), 0),
+                    COALESCE(SUM(cache_tokens), 0),
+                    COALESCE(SUM(cost_usd), 0.0),
+                    COUNT(*)
+                 FROM sessions
+                 WHERE date(updated_at) BETWEEN ?1 AND ?2",
+                params![start, end],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap_or((0, 0, 0, 0.0, 0));
+
+        let events: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_events
+                 WHERE date(ts) BETWEEN ?1 AND ?2",
+                params![start, end],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+
+        Ok(UsageTotals {
+            input_tokens: input as u64,
+            output_tokens: output as u64,
+            cache_tokens: cache as u64,
+            cost_usd: cost,
+            session_count: sess as u64,
+            event_count: events as u64,
+        })
+    }
+
+    /// Sessions GROUP BY project_path. Real cost (no approximation).
+    ///
+    /// Windows drive-letter casing is normalized so `C:\foo` and `c:\foo`
+    /// collapse to one row (they're the same project — NTFS is case-
+    /// insensitive). The displayed name uses `MIN(...)` so the conventional
+    /// uppercase drive letter wins (uppercase sorts before lowercase in
+    /// ASCII). Non-Windows paths fall through unchanged.
+    pub fn get_breakdown_by_project(&self, start: &str, end: &str) -> Result<Vec<BreakdownRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                MIN(COALESCE(NULLIF(project_path, ''), '(unknown)')) AS name,
+                COUNT(*) AS count,
+                COALESCE(SUM(input_tokens + output_tokens + cache_tokens), 0) AS tokens,
+                COALESCE(SUM(cost_usd), 0.0) AS cost
+             FROM sessions
+             WHERE date(updated_at) BETWEEN ?1 AND ?2
+             GROUP BY
+                CASE
+                    WHEN SUBSTR(project_path, 2, 1) = ':'
+                    THEN LOWER(SUBSTR(project_path, 1, 1)) || SUBSTR(project_path, 2)
+                    ELSE COALESCE(NULLIF(project_path, ''), '(unknown)')
+                END
+             ORDER BY cost DESC, count DESC",
+        )?;
+        let rows = stmt.query_map(params![start, end], |r| {
+            Ok(BreakdownRow {
+                name: r.get(0)?,
+                count: r.get(1)?,
+                tokens: r.get(2)?,
+                cost_usd: r.get(3)?,
+                share_pct: 0.0,
+            })
+        })?;
+        Ok(with_share_pct(rows.collect::<Result<Vec<_>>>()?, ShareMetric::Cost))
+    }
+
+    /// Sessions GROUP BY model. Real cost.
+    pub fn get_breakdown_by_model(&self, start: &str, end: &str) -> Result<Vec<BreakdownRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                COALESCE(NULLIF(model, ''), '(unknown)') AS name,
+                COUNT(*) AS count,
+                COALESCE(SUM(input_tokens + output_tokens + cache_tokens), 0) AS tokens,
+                COALESCE(SUM(cost_usd), 0.0) AS cost
+             FROM sessions
+             WHERE date(updated_at) BETWEEN ?1 AND ?2
+             GROUP BY name
+             ORDER BY cost DESC, count DESC",
+        )?;
+        let rows = stmt.query_map(params![start, end], |r| {
+            Ok(BreakdownRow {
+                name: r.get(0)?,
+                count: r.get(1)?,
+                tokens: r.get(2)?,
+                cost_usd: r.get(3)?,
+                share_pct: 0.0,
+            })
+        })?;
+        Ok(with_share_pct(rows.collect::<Result<Vec<_>>>()?, ShareMetric::Cost))
+    }
+
+    /// Tool breakdown with approximate cost (session cost / event count, per
+    /// session, summed per tool). Filters to ToolUseStart-style events so we
+    /// don't count user messages or text-only turns.
+    pub fn get_breakdown_by_tool(&self, start: &str, end: &str) -> Result<Vec<BreakdownRow>> {
+        let mut stmt = self.conn.prepare(
+            "WITH session_event_n AS (
+                SELECT session_id, COUNT(*) AS n
+                FROM agent_events
+                WHERE date(ts) BETWEEN ?1 AND ?2
+                GROUP BY session_id
+            )
+            SELECT
+                e.summary AS name,
+                COUNT(*) AS count,
+                0 AS tokens,
+                COALESCE(SUM(s.cost_usd / NULLIF(n.n, 0)), 0.0) AS cost
+             FROM agent_events e
+             JOIN session_event_n n ON e.session_id = n.session_id
+             LEFT JOIN sessions s   ON e.session_id = s.id
+             WHERE date(e.ts) BETWEEN ?1 AND ?2
+               AND e.kind IN ('ToolUseStart', 'Hook:PreToolUse')
+               AND e.summary <> ''
+             GROUP BY name
+             ORDER BY count DESC",
+        )?;
+        let rows = stmt.query_map(params![start, end], |r| {
+            Ok(BreakdownRow {
+                name: r.get(0)?,
+                count: r.get(1)?,
+                tokens: r.get(2)?,
+                cost_usd: r.get(3)?,
+                share_pct: 0.0,
+            })
+        })?;
+        Ok(with_share_pct(rows.collect::<Result<Vec<_>>>()?, ShareMetric::Count))
+    }
+
+    /// Activity breakdown — every event kind, approx cost.
+    pub fn get_breakdown_by_activity(&self, start: &str, end: &str) -> Result<Vec<BreakdownRow>> {
+        let mut stmt = self.conn.prepare(
+            "WITH session_event_n AS (
+                SELECT session_id, COUNT(*) AS n
+                FROM agent_events
+                WHERE date(ts) BETWEEN ?1 AND ?2
+                GROUP BY session_id
+            )
+            SELECT
+                e.kind AS name,
+                COUNT(*) AS count,
+                0 AS tokens,
+                COALESCE(SUM(s.cost_usd / NULLIF(n.n, 0)), 0.0) AS cost
+             FROM agent_events e
+             JOIN session_event_n n ON e.session_id = n.session_id
+             LEFT JOIN sessions s   ON e.session_id = s.id
+             WHERE date(e.ts) BETWEEN ?1 AND ?2
+             GROUP BY name
+             ORDER BY count DESC",
+        )?;
+        let rows = stmt.query_map(params![start, end], |r| {
+            Ok(BreakdownRow {
+                name: r.get(0)?,
+                count: r.get(1)?,
+                tokens: r.get(2)?,
+                cost_usd: r.get(3)?,
+                share_pct: 0.0,
+            })
+        })?;
+        Ok(with_share_pct(rows.collect::<Result<Vec<_>>>()?, ShareMetric::Count))
+    }
+
+    /// Shell-command breakdown — bucketed by the first whitespace-separated
+    /// token of the captured `command` arg. Only Bash tool calls are eligible.
+    /// Aggregation done in Rust because SQLite lacks robust string splitting.
+    pub fn get_breakdown_by_shell(&self, start: &str, end: &str) -> Result<Vec<BreakdownRow>> {
+        let mut stmt = self.conn.prepare(
+            "WITH session_event_n AS (
+                SELECT session_id, COUNT(*) AS n
+                FROM agent_events
+                WHERE date(ts) BETWEEN ?1 AND ?2
+                GROUP BY session_id
+            )
+            SELECT
+                e.tool_params AS cmd,
+                e.session_id  AS sid,
+                CAST(s.cost_usd AS REAL) / NULLIF(n.n, 0) AS approx_cost
+             FROM agent_events e
+             JOIN session_event_n n ON e.session_id = n.session_id
+             LEFT JOIN sessions s   ON e.session_id = s.id
+             WHERE date(e.ts) BETWEEN ?1 AND ?2
+               AND e.summary = 'Bash'
+               AND e.tool_params IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(params![start, end], |r| {
+            let cmd: String = r.get::<_, Option<String>>(0)?.unwrap_or_default();
+            let approx_cost: f64 = r.get::<_, Option<f64>>(2)?.unwrap_or(0.0);
+            Ok((cmd, approx_cost))
+        })?;
+
+        // Bucket by the first token of the command, e.g. "git status -s" → "git".
+        use std::collections::HashMap;
+        let mut buckets: HashMap<String, (i64, f64)> = HashMap::new();
+        for r in rows {
+            let (cmd, cost) = r?;
+            let head = cmd
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_' && c != '.');
+            let key = if head.is_empty() {
+                continue;
+            } else {
+                head.to_string()
+            };
+            let entry = buckets.entry(key).or_insert((0, 0.0));
+            entry.0 += 1;
+            entry.1 += cost;
+        }
+        let mut out: Vec<BreakdownRow> = buckets
+            .into_iter()
+            .map(|(name, (count, cost))| BreakdownRow {
+                name,
+                count,
+                tokens: 0,
+                cost_usd: cost,
+                share_pct: 0.0,
+            })
+            .collect();
+        out.sort_by(|a, b| b.count.cmp(&a.count));
+        Ok(with_share_pct(out, ShareMetric::Count))
+    }
+
     /// Per-day usage between two YYYY-MM-DD dates, inclusive on both ends.
     /// Days with no sessions are omitted (the frontend fills gaps so the
     /// chart axis is contiguous).
@@ -556,6 +834,31 @@ impl Database {
 
         rows.collect()
     }
+}
+
+enum ShareMetric {
+    Cost,
+    Count,
+}
+
+/// Compute `share_pct` (0..100) for each row based on the chosen metric.
+/// Project/model use Cost (real). Tool/shell/activity use Count because
+/// approx-cost can be flat-zero across rows when sessions have no cost data.
+fn with_share_pct(mut rows: Vec<BreakdownRow>, metric: ShareMetric) -> Vec<BreakdownRow> {
+    let total: f64 = match metric {
+        ShareMetric::Cost => rows.iter().map(|r| r.cost_usd).sum(),
+        ShareMetric::Count => rows.iter().map(|r| r.count as f64).sum(),
+    };
+    if total > 0.0 {
+        for r in &mut rows {
+            let v = match metric {
+                ShareMetric::Cost => r.cost_usd,
+                ShareMetric::Count => r.count as f64,
+            };
+            r.share_pct = (v / total) * 100.0;
+        }
+    }
+    rows
 }
 
 fn row_to_snapshot(row: &Row) -> Result<SnapshotRow> {

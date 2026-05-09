@@ -137,14 +137,15 @@ cargo tauri build    # release bundle for distribution
 > ✅ Dashboard updates within a second of every PreToolUse / Stop / Notification
 > from any active `claude` session, anywhere on your machine.
 
-### The five tabs
+### The six tabs
 
 | Tab | What you see |
 |---|---|
 | 🟢 **Agents** | Live grid — one tile per Claude session, color-coded by status, with parent / sub-agent grouping. Click a tile for the detail pane (last message, in-flight tool, **5-column cost breakdown** — Base Input / 5m Cache Write / 1h Cache Write / Cache Hit & Refresh / Output — **I/O + cache-hit meters**, plus a live **Recent events** stream of every captured tool call, hook, and assistant turn). |
-| 📊 **Usage** | Local SQLite history — today's tokens & cost, plus a bar chart with **Last 7 days / Last 30 days / Custom date range** selector. Each bar shows the date and cost without hovering. |
+| 📊 **Usage** | Local SQLite history. **Range-aware totals card** (Tokens / Cache / Cost / Sessions / Events) that respects the active date filter, per-day cost bars, and **five breakdown sections** — by Project, by Model, by Core tools, by Shell commands, by Activity — each as a horizontal-bar list with share %. Project / Model show real cost; tool / shell / activity show approx cost (session $ split per event, labeled italic). **Last 7d / 30d / Custom** range pills. |
+| 🕓 **History** | Per-session timeline of every `Edit` / `Write` / `MultiEdit` / `NotebookEdit` Claude has made. Click an edit for a unified diff (green +/red − colored). **Revert** rolls the file back to its pre-edit state — and itself is reversible (a `pre-restore` snapshot is captured before overwriting, so an unwanted revert can be undone from the same UI). 1 MB per-file cap, 14-day retention by default. Hook-driven (real-time hooks must be enabled). |
 | 🌐 **API** | Optional Anthropic billing-API view (paste a key — kept in memory only, never written to disk). |
-| ⚙️ **Settings** | Hook setup, state-machine thresholds, **editable per-model pricing** (13 SKUs × 5 cells, sourced from Anthropic's pricing page), **display currency** dropdown (10 currencies, FX rates from Frankfurter cached daily). |
+| ⚙️ **Settings** | Hook setup, state-machine thresholds, **editable per-model pricing** (13 SKUs × 5 cells, sourced from Anthropic's pricing page), **display currency** dropdown (10 currencies, FX rates from Frankfurter cached daily), **snapshots** toggle + retention days + disk usage. |
 | ❤ **Sponsor** | Quick links to GitHub Sponsors, Buy Me a Coffee, and the issue tracker. Opens in your default browser. |
 
 ### Status legend
@@ -205,8 +206,19 @@ still keeps the dashboard working — just less precisely.
 - **JSONL fallback** — when hooks aren't registered (or for sessions that started
   before they were), status is inferred from `~/.claude/projects/**/*.jsonl` with
   a state machine that includes the `system/turn_duration` end-of-turn marker
-- **Local usage history** — SQLite-backed token and cost rollups; chart with
-  Last 7d / Last 30d / Custom date-range selector, each bar showing date + cost
+- **Local usage history** — SQLite-backed token and cost rollups; range-aware
+  totals (Tokens / Cache / Cost / Sessions / Events), per-day cost bars, plus
+  **five breakdown sections** (Project / Model / Core tools / Shell commands /
+  Activity) with share % bars. Project / Model carry real cost; tool / shell /
+  activity show approx cost (session $ split evenly across events, labeled).
+  Last 7d / Last 30d / Custom date-range selector
+- **History tab — file diff & one-click rollback** — every `Edit` / `Write` /
+  `MultiEdit` / `NotebookEdit` Claude makes is captured pre-edit and post-edit
+  via hooks. Browse changes per session, view a unified diff, and **Revert**
+  to the pre-edit state. Restore is itself reversible — a pre-restore snapshot
+  is captured before overwriting. 1 MB per-file cap, configurable retention.
+- **Shell command capture** — every Bash invocation Claude runs is logged with
+  its command argument; powers the Usage tab's Shell-command breakdown
 - **Optional Anthropic billing API** — paste a key, kept in memory only
 - **Tray icon + toast** — toast pops up when an agent flips to Waiting
 - **Light + dark themes** — modern glassy design language, reduced-motion friendly
@@ -224,6 +236,8 @@ still keeps the dashboard working — just less precisely.
 | `text_idle_secs` | 5 | Text-only turn quiet for this long → Waiting |
 | `hook_grace_secs` | 30 | When to treat hooks as authoritative |
 | `message_preview_chars` | 280 | Trim length for assistant message preview |
+| `snapshots_enabled` | `true` | Capture pre/post file content on `Edit`/`Write`/`MultiEdit`/`NotebookEdit` (powers History tab) |
+| `snapshot_retention_days` | 14 | Older snapshots are pruned on app startup |
 
 ---
 
@@ -336,7 +350,9 @@ claude-monitor/
 │       ├── prefs.rs               # prefs.json — hooks_enabled, pricing_overrides, currency
 │       ├── pricing.rs             # ModelPricing/PricingTable + 13-SKU defaults
 │       ├── currency.rs            # Frankfurter FX client + 24h cache logic
-│       ├── db.rs                  # SQLite history (rusqlite, bundled, with migration)
+│       ├── db.rs                  # SQLite history (rusqlite, bundled) — sessions, agent_events,
+│       │                          # file_snapshots; Usage-tab breakdown queries
+│       ├── snapshots.rs           # File snapshot capture / diff / restore (History tab)
 │       └── api.rs                 # Anthropic billing API client
 └── frontend/                      # Rust → WASM via Trunk
     ├── Cargo.toml
@@ -352,9 +368,11 @@ claude-monitor/
         └── components/
             ├── agent_grid.rs      # group rendering with nested sub-agents
             ├── agent_detail.rs    # selected-agent inspector + 5-row cost table + meters
-            ├── usage_panel.rs     # local SQLite usage chart + range selector
+            ├── usage_panel.rs     # local SQLite usage — totals + day chart + 5 breakdowns
+            ├── history_panel.rs   # History tab — sessions → edits → diff + Revert
+            ├── diff_view.rs       # pure-CSS unified-diff renderer
             ├── api_usage_panel.rs # Anthropic billing-API view
-            ├── settings.rs        # hook toggle, thresholds, pricing table, currency picker
+            ├── settings.rs        # hook toggle, thresholds, pricing, currency, snapshots
             └── sponsor.rs         # Sponsor tab — outbound links via tauri-plugin-opener
 ```
 
@@ -372,12 +390,20 @@ claude-monitor/
 | `register_hooks` / `unregister_hooks` | `HooksStatus` |
 | `get_daily_summary` / `get_weekly_chart` / `get_sessions { limit }` | SQLite history |
 | `get_usage_range { startDate, endDate }` | `Vec<DayStats>` for any YYYY-MM-DD range |
+| `get_usage_breakdown { startDate, endDate }` | `UsageBreakdown` (totals + day chart + 5 breakdown sections in one call) |
 | `set_api_key { key }` / `fetch_api_usage` | Anthropic billing API |
 | `get_pricing` / `set_pricing { table }` / `reset_pricing` | `PricingTable` (defaults + overrides) |
 | `get_currency_state` / `set_active_currency { code }` / `refresh_currency_rates` | `CurrencyState { active, list, fetched_at }` |
+| `list_session_snapshots { sessionId }` / `list_recent_snapshots { limit? }` | `Vec<SnapshotRow>` for the History tab |
+| `get_snapshot_diff { snapshotId }` | `DiffResult { unified, plus, minus, … }` |
+| `get_snapshot_content { snapshotId }` | base64 blob bytes (binary file viewer) |
+| `restore_snapshot { snapshotId }` | `RestoreResult` (and emits `snapshot-restored`) |
+| `purge_session_snapshots { sessionId }` | count deleted |
+| `get_snapshot_settings` / `set_snapshot_settings { settings }` | `SnapshotSettings { enabled, retentionDays, totalSizeBytes, totalCount }` |
 
 Events emitted to the frontend: `agent-status`, `agent-waiting`, `agent-event`
-(per-entry payload for the live event log).
+(per-entry payload for the live event log), `snapshot-restored` (History tab
+refresh trigger).
 
 External links from the Sponsor tab go through the `plugin:opener|open_url`
 command (provided by `tauri-plugin-opener`); the URL allowlist lives in
@@ -435,6 +461,9 @@ to talk.
 
 Recently shipped:
 
+- [x] **History tab — file diff & one-click rollback** (issue #3): captures pre/post bytes for every Edit/Write/MultiEdit/NotebookEdit via hooks; reversible Revert
+- [x] **Usage tab breakdowns** — Project / Model / Core tools / Shell commands / Activity, plus range-aware totals card
+- [x] **Shell command capture** — Bash invocations logged with their command argument
 - [x] Per-agent live event log in the detail pane (ring buffer + SQLite history; `agent-event` Tauri stream)
 - [x] Editable per-model pricing (13 SKUs × 5 columns)
 - [x] Currency conversion (Frankfurter, 10 currencies)
@@ -446,10 +475,10 @@ Recently shipped:
 Still planned:
 
 - [ ] Pin hook server to a fixed port so registrations survive restarts
-- [ ] Per-project rollup view
 - [ ] Native rate-limit alerts via `tauri-plugin-notification`
-- [ ] Export CSV
+- [ ] Export CSV (Usage breakdowns, event log)
+- [ ] Cross-edit diff in History (compare same file across two snapshots)
+- [ ] Capture Bash file mutations (`sed -i`, `>`, `tee`) in the History tab
 - [ ] Sprite skin picker
 - [ ] Detect Claude Code subscription plan
-- [ ] Prebuilt macOS `.dmg` and Linux `.AppImage` bundles in `installer/`
 - [ ] Code-sign the Windows installer to clear SmartScreen

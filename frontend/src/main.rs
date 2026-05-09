@@ -202,7 +202,10 @@ fn App() -> impl IntoView {
     view! {
         <div class="app">
             <header class="header">
-                <h1 class="logo">"CLAUDE MONITOR"</h1>
+                <h1 class="logo">
+                    "CLAUDE MONITOR"
+                    <span class="logo-version">{format!("v{}", env!("CARGO_PKG_VERSION"))}</span>
+                </h1>
                 <div class="stats">
                     <span class="stat">
                         <span class="dot working"></span>

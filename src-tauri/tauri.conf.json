@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Claude Monitor",
-  "version": "0.2.0",
   "identifier": "com.claudemonitor.desktop",
   "build": {
     "beforeDevCommand": "cd frontend && trunk serve --port 1420",
