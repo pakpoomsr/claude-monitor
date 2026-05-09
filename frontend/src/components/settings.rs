@@ -2,7 +2,9 @@ use leptos::prelude::*;
 use serde::Serialize;
 
 use crate::tauri_bridge::{invoke, invoke_no_args};
-use crate::types::{format_datetime, AgentSettings, CurrencyState, HooksStatus, PricingTable};
+use crate::types::{
+    format_datetime, AgentSettings, CurrencyState, HooksStatus, PricingTable, SnapshotSettings,
+};
 
 #[derive(Serialize)]
 struct SetSettingsArgs {
@@ -17,6 +19,11 @@ struct SetPricingArgs {
 #[derive(Serialize)]
 struct SetCurrencyArgs {
     code: String,
+}
+
+#[derive(Serialize)]
+struct SetSnapshotSettingsArgs {
+    settings: SnapshotSettings,
 }
 
 #[component]
@@ -200,8 +207,120 @@ pub fn SettingsPanel() -> impl IntoView {
             </div>
 
             <PricingSection />
+
+            <SnapshotsSection />
         </section>
     }
+}
+
+/// Snapshot store toggle, retention, and disk usage. Powers the History tab.
+#[component]
+fn SnapshotsSection() -> impl IntoView {
+    let (settings, set_settings) = signal(SnapshotSettings::default());
+    let (status, set_status) = signal::<Option<String>>(None);
+
+    leptos::task::spawn_local(async move {
+        if let Ok(s) = invoke_no_args::<SnapshotSettings>("get_snapshot_settings").await {
+            set_settings.set(s);
+        }
+    });
+
+    let save = move |_| {
+        let s = settings.get();
+        leptos::task::spawn_local(async move {
+            match invoke::<(), _>(
+                "set_snapshot_settings",
+                &SetSnapshotSettingsArgs { settings: s },
+            )
+            .await
+            {
+                Ok(_) => set_status.set(Some("Saved.".into())),
+                Err(e) => set_status.set(Some(format!("Error: {e}"))),
+            }
+        });
+    };
+
+    let mb = move || {
+        let bytes = settings.get().total_size_bytes;
+        if bytes <= 0 {
+            "0 KB".to_string()
+        } else if bytes < 1024 * 1024 {
+            format!("{} KB", bytes / 1024)
+        } else {
+            format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+        }
+    };
+
+    view! {
+        <h2 style="margin-top: 24px;">"Snapshots (History tab)"</h2>
+        <small class="muted" style="display: block; margin-bottom: 8px;">
+            "Captures pre/post file content for every "
+            <code>"Edit"</code> ", " <code>"Write"</code> ", "
+            <code>"MultiEdit"</code> ", " <code>"NotebookEdit"</code>
+            " call so you can diff and restore. Hook-driven — requires real-time hooks above."
+        </small>
+
+        <div class="form">
+            <label class="form-field">
+                <span>
+                    <input
+                        type="checkbox"
+                        prop:checked=move || settings.get().enabled
+                        on:change=move |ev| {
+                            let checked = event_target_checked(&ev);
+                            set_settings.update(|s| s.enabled = checked);
+                        }
+                    />
+                    " Enable file snapshots"
+                </span>
+                <small class="muted">
+                    "Disabling stops capture immediately. Existing snapshots remain on disk \
+                     until pruned."
+                </small>
+            </label>
+
+            <label class="form-field">
+                <span>"Retention (days)"</span>
+                <input
+                    type="number"
+                    min="1"
+                    max="365"
+                    prop:value=move || settings.get().retention_days.to_string()
+                    on:input=move |ev| {
+                        if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                            set_settings.update(|s| s.retention_days = v);
+                        }
+                    }
+                />
+                <small class="muted">
+                    "Older snapshots are pruned on app startup. 14 days is a sane default."
+                </small>
+            </label>
+
+            <div class="form-row">
+                <span class="muted small">
+                    {move || format!(
+                        "Disk usage: {} across {} snapshots",
+                        mb(),
+                        settings.get().total_count
+                    )}
+                </span>
+            </div>
+
+            <div class="form-row">
+                <button class="btn primary" on:click=save>"Save"</button>
+                {move || status.get().map(|m| view! { <span class="muted">{m}</span> })}
+            </div>
+        </div>
+    }
+}
+
+fn event_target_checked(ev: &leptos::ev::Event) -> bool {
+    use wasm_bindgen::JsCast;
+    ev.target()
+        .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+        .map(|el| el.checked())
+        .unwrap_or(false)
 }
 
 /// Editable per-model price table. Source of truth is the global pricing

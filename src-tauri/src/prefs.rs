@@ -21,6 +21,12 @@ pub struct Prefs {
     pub pricing_currency: String,
     /// Cached FX rates from Frankfurter; refreshed at most daily.
     pub currency_cache: Option<CurrencyCache>,
+    /// Capture file snapshots on `Edit`/`Write`/`MultiEdit`/`NotebookEdit`
+    /// tool calls (powers the History tab). Hook-driven, so requires
+    /// `hooks_enabled` to take effect.
+    pub snapshots_enabled: bool,
+    /// Days to retain captured snapshots before the startup sweep prunes them.
+    pub snapshot_retention_days: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +45,8 @@ impl Default for Prefs {
             pricing_overrides: HashMap::new(),
             pricing_currency: "USD".to_string(),
             currency_cache: None,
+            snapshots_enabled: true,
+            snapshot_retention_days: 14,
         }
     }
 }

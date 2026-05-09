@@ -1552,3 +1552,156 @@ code, pre, .mono {
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
 }
+
+/* =========================================================================
+   History / Version Rollback tab — issue #3.
+   Hierarchical layout: session list on the left, diff viewer on the right.
+   ========================================================================= */
+.history-panel { padding: 0; }
+.history-panel .usage-header { padding: 16px 20px 8px; }
+
+.banner {
+    margin: 8px 20px;
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    border-left: 3px solid var(--muted);
+}
+.banner--warn {
+    background: var(--bg-soft);
+    border-left-color: #d99800;
+    color: var(--text);
+}
+.banner--info {
+    background: var(--bg-soft);
+    border-left-color: var(--accent);
+    color: var(--text);
+}
+
+.history-layout {
+    display: grid;
+    grid-template-columns: minmax(280px, 38%) 1fr;
+    gap: 0;
+    border-top: 1px solid var(--line);
+    min-height: 60vh;
+}
+.history-sessions {
+    border-right: 1px solid var(--line);
+    overflow-y: auto;
+    max-height: 78vh;
+}
+.history-diff {
+    overflow: auto;
+    max-height: 78vh;
+}
+
+.history-session {
+    border-bottom: 1px solid var(--line);
+}
+.history-session-header {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr auto auto auto;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 14px;
+    background: transparent;
+    border: none;
+    text-align: left;
+    color: var(--text);
+    cursor: pointer;
+}
+.history-session-header:hover { background: var(--bg-soft); }
+.history-session-project { font-weight: 600; }
+.history-session-count {
+    color: var(--muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.history-edits {
+    padding: 4px 0 8px;
+    background: var(--bg-soft);
+}
+
+.edit-row-wrapper {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 6px;
+    padding: 0 12px;
+}
+.edit-row,
+.edit-row--unpaired,
+.edit-row--restore {
+    display: grid;
+    grid-template-columns: 70px 110px 1fr auto;
+    gap: 10px;
+    align-items: baseline;
+    padding: 6px 8px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    text-align: left;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 12px;
+}
+.edit-row:hover,
+.edit-row--unpaired:hover,
+.edit-row--restore:hover {
+    background: var(--bg);
+    border-color: var(--line);
+}
+.edit-row.active,
+.edit-row--unpaired.active,
+.edit-row--restore.active {
+    background: var(--bg);
+    border-color: var(--accent);
+}
+.edit-row--unpaired { color: var(--muted); }
+.edit-row--restore .event-kind { color: #d99800; }
+
+.btn-small {
+    padding: 3px 8px;
+    font-size: 11px;
+}
+.btn-restore { white-space: nowrap; }
+
+/* Diff view */
+.diff-view { padding: 14px 18px; font-size: 12.5px; }
+.diff-empty { padding: 14px 6px; font-style: italic; }
+.diff-meta {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 10px;
+    font-variant-numeric: tabular-nums;
+}
+.diff-stat--plus  { color: #2ea043; font-weight: 600; }
+.diff-stat--minus { color: #d04646; font-weight: 600; }
+.diff-warning {
+    margin-bottom: 8px;
+    padding: 6px 10px;
+    border-left: 3px solid var(--muted);
+    font-size: 12px;
+}
+.diff-body {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 8px 0;
+    margin: 0;
+    overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    line-height: 1.45;
+    white-space: pre;
+}
+.diff-line {
+    display: block;
+    padding: 0 12px;
+    white-space: pre;
+}
+.diff-line--add { background: rgba(46, 160, 67, 0.12); color: #2ea043; }
+.diff-line--del { background: rgba(208, 70, 70, 0.12); color: #d04646; }
+.diff-line--ctx { color: var(--text-soft); }
+

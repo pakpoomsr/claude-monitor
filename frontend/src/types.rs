@@ -425,6 +425,55 @@ pub struct ModelUsage {
     pub cost_usd: f64,
 }
 
+/// Mirror of `snapshots::SnapshotRow`. Each `Edit`/`Write`/`MultiEdit`/
+/// `NotebookEdit` tool call produces a `pre` row and (after the tool runs)
+/// a paired `post` row. Restore creates a `pre-restore` row.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotRow {
+    pub id: i64,
+    pub session_id: String,
+    pub project_path: String,
+    pub file_path: String,
+    pub tool_name: String,
+    pub phase: String,
+    pub paired_id: Option<i64>,
+    pub blob_path: String,
+    pub size_bytes: i64,
+    pub sha256: String,
+    pub is_binary: bool,
+    pub oversized: bool,
+    pub ts: String,
+    pub tool_use_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffResult {
+    pub unified: String,
+    pub plus: u32,
+    pub minus: u32,
+    pub is_binary: bool,
+    pub pre_oversized: bool,
+    pub post_oversized: bool,
+    pub pre: Option<SnapshotRow>,
+    pub post: Option<SnapshotRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestoreResult {
+    pub ok: bool,
+    pub pre_restore_snapshot_id: Option<i64>,
+    pub deleted_target: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SnapshotSettings {
+    pub enabled: bool,
+    pub retention_days: u32,
+    pub total_size_bytes: i64,
+    pub total_count: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageResponse {
     pub period_start: String,

@@ -2,6 +2,7 @@ use rusqlite::{Connection, Result, Row, params};
 use serde::{Deserialize, Serialize};
 
 use crate::agents::{LogEntry, LogSource};
+use crate::snapshots::SnapshotRow;
 
 /// Best-effort 0600 on Unix; no-op on Windows. Local sessions DB can hold
 /// per-project usage history that shouldn't be world-readable on shared hosts.
@@ -109,6 +110,29 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_agent_events_session_ts
                 ON agent_events(session_id, ts DESC);
+
+            CREATE TABLE IF NOT EXISTS file_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                project_path TEXT NOT NULL DEFAULT '',
+                file_path TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                paired_id INTEGER,
+                blob_path TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                is_binary INTEGER NOT NULL DEFAULT 0,
+                oversized INTEGER NOT NULL DEFAULT 0,
+                ts TEXT NOT NULL,
+                tool_use_id TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_snapshots_session_ts
+                ON file_snapshots(session_id, ts DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_snapshots_tool_use_id
+                ON file_snapshots(tool_use_id);
         ")?;
         // Idempotent migration: add the three split-cache columns if they
         // don't exist yet. Older rows keep `cache_tokens` as the only cache
@@ -324,6 +348,187 @@ impl Database {
         Ok(out)
     }
 
+    // ---- File snapshots (History tab) ----
+
+    /// Insert a `file_snapshots` row. `blob_path` is filled in after the row
+    /// id is known (the blob filename derives from the id), so callers should
+    /// follow up with `update_file_snapshot_blob_path`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_file_snapshot(
+        &mut self,
+        session_id: &str,
+        project_path: &str,
+        file_path: &str,
+        tool_name: &str,
+        phase: &str,
+        paired_id: Option<i64>,
+        blob_path: &str,
+        size_bytes: i64,
+        sha256: &str,
+        is_binary: bool,
+        oversized: bool,
+        ts: &str,
+        tool_use_id: Option<&str>,
+    ) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO file_snapshots
+                (session_id, project_path, file_path, tool_name, phase,
+                 paired_id, blob_path, size_bytes, sha256, is_binary,
+                 oversized, ts, tool_use_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                session_id,
+                project_path,
+                file_path,
+                tool_name,
+                phase,
+                paired_id,
+                blob_path,
+                size_bytes,
+                sha256,
+                is_binary as i64,
+                oversized as i64,
+                ts,
+                tool_use_id,
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn update_file_snapshot_blob_path(&self, id: i64, blob_path: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE file_snapshots SET blob_path = ?1 WHERE id = ?2",
+            params![blob_path, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_paired_id(&self, id: i64, paired_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE file_snapshots SET paired_id = ?1 WHERE id = ?2",
+            params![paired_id, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn find_paired_id(&self, id: i64) -> Result<Option<i64>> {
+        match self.conn.query_row(
+            "SELECT paired_id FROM file_snapshots WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, Option<i64>>(0),
+        ) {
+            Ok(opt) => Ok(opt),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Most recent unpaired `pre` row for the given `tool_use_id`. Used by
+    /// `PostToolUse` capture to link the matching pair.
+    pub fn find_unpaired_pre(&self, session_id: &str, tool_use_id: &str) -> Result<Option<i64>> {
+        match self.conn.query_row(
+            "SELECT id FROM file_snapshots
+             WHERE session_id = ?1 AND tool_use_id = ?2
+               AND phase = 'pre' AND paired_id IS NULL
+             ORDER BY id DESC LIMIT 1",
+            params![session_id, tool_use_id],
+            |row| row.get::<_, i64>(0),
+        ) {
+            Ok(id) => Ok(Some(id)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn get_file_snapshot(&self, id: i64) -> Result<Option<SnapshotRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, project_path, file_path, tool_name, phase,
+                    paired_id, blob_path, size_bytes, sha256, is_binary,
+                    oversized, ts, tool_use_id
+             FROM file_snapshots WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], row_to_snapshot)?;
+        match rows.next() {
+            Some(r) => r.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub fn list_session_snapshots(&self, session_id: &str) -> Result<Vec<SnapshotRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, project_path, file_path, tool_name, phase,
+                    paired_id, blob_path, size_bytes, sha256, is_binary,
+                    oversized, ts, tool_use_id
+             FROM file_snapshots
+             WHERE session_id = ?1
+             ORDER BY ts DESC, id DESC",
+        )?;
+        let rows = stmt.query_map(params![session_id], row_to_snapshot)?;
+        rows.collect()
+    }
+
+    pub fn list_recent_snapshots(&self, limit: usize) -> Result<Vec<SnapshotRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, project_path, file_path, tool_name, phase,
+                    paired_id, blob_path, size_bytes, sha256, is_binary,
+                    oversized, ts, tool_use_id
+             FROM file_snapshots
+             ORDER BY ts DESC, id DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], row_to_snapshot)?;
+        rows.collect()
+    }
+
+    /// Returns the blob_paths of every deleted row so the caller can unlink
+    /// the on-disk blobs.
+    pub fn delete_file_snapshots_older_than(&mut self, days: i64) -> Result<Vec<String>> {
+        let cutoff = format!("-{} days", days);
+        let mut paths: Vec<String> = Vec::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT blob_path FROM file_snapshots
+                 WHERE ts < datetime('now', ?1)",
+            )?;
+            let rows = stmt.query_map(params![cutoff], |row| row.get::<_, String>(0))?;
+            for r in rows {
+                paths.push(r?);
+            }
+        }
+        self.conn.execute(
+            "DELETE FROM file_snapshots WHERE ts < datetime('now', ?1)",
+            params![cutoff],
+        )?;
+        Ok(paths)
+    }
+
+    pub fn delete_file_snapshots_for_session(&mut self, session_id: &str) -> Result<Vec<String>> {
+        let mut paths: Vec<String> = Vec::new();
+        {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT blob_path FROM file_snapshots WHERE session_id = ?1")?;
+            let rows = stmt.query_map(params![session_id], |row| row.get::<_, String>(0))?;
+            for r in rows {
+                paths.push(r?);
+            }
+        }
+        self.conn.execute(
+            "DELETE FROM file_snapshots WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        Ok(paths)
+    }
+
+    /// (count, total size in bytes) across the whole snapshot store.
+    pub fn snapshot_totals(&self) -> Result<(i64, i64)> {
+        self.conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM file_snapshots",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+    }
+
     /// Per-day usage between two YYYY-MM-DD dates, inclusive on both ends.
     /// Days with no sessions are omitted (the frontend fills gaps so the
     /// chart axis is contiguous).
@@ -351,4 +556,25 @@ impl Database {
 
         rows.collect()
     }
+}
+
+fn row_to_snapshot(row: &Row) -> Result<SnapshotRow> {
+    let is_binary: i64 = row.get(10)?;
+    let oversized: i64 = row.get(11)?;
+    Ok(SnapshotRow {
+        id: row.get(0)?,
+        session_id: row.get(1)?,
+        project_path: row.get(2)?,
+        file_path: row.get(3)?,
+        tool_name: row.get(4)?,
+        phase: row.get(5)?,
+        paired_id: row.get(6)?,
+        blob_path: row.get(7)?,
+        size_bytes: row.get(8)?,
+        sha256: row.get(9)?,
+        is_binary: is_binary != 0,
+        oversized: oversized != 0,
+        ts: row.get(12)?,
+        tool_use_id: row.get(13)?,
+    })
 }
