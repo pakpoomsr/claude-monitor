@@ -43,26 +43,29 @@ After a backend change, smoke-test with `timeout 25 cargo tauri dev --no-watch` 
 | `agents.rs` | **The heart.** `AgentRegistry`, `AgentSnapshot`, state machine (`apply_events`, `apply_hook`, `tick`, `compute_status`), `HookEvent`, `LogEntry` / `LogSource`. Holds a live `PricingTable` used by the Usage event handler to compute cost. Each `AgentInner` carries a 500-entry `VecDeque<LogEntry>` ring buffer fed through the single `AgentInner::record()` helper — narrative filter and ring eviction live there, never replicated at call sites. `apply_events` and `apply_hook` return `(Option<AgentSnapshot>, Vec<LogEntry>)`; callers fan the entries out to `app.emit("agent-event", ...)` and `db.insert_events(...)`. |
 | `hooks.rs` | Axum HTTP server bound to `127.0.0.1:0` (random ephemeral port). Single `POST /h` endpoint with `X-Auth` header. Constant-time token compare via `subtle`; 64 KB body limit; payload contents never logged. `ServerState` carries the `Arc<Mutex<Database>>` so hook-driven `LogEntry`s persist alongside the live emit. |
 | `settings_writer.rs` | Reads/registers/unregisters our hook entries in `~/.claude/settings.json`. Tag `_claude_monitor: true` on every entry we own; backup to `.bak` on first write; symlink-safe atomic writes via `OpenOptions::create_new(true)` + rename; 0600 perms on Unix. |
-| `prefs.rs` | Persistent app prefs at `<data_local_dir>/claude-monitor/prefs.json`. Fields: `hooks_enabled`, `pricing_overrides` (HashMap keyed by `PricingEntry.id`), `pricing_currency` (ISO 4217), `currency_cache` (Frankfurter rates + fetched_at). |
+| `prefs.rs` | Persistent app prefs at `<data_local_dir>/claude-monitor/prefs.json`. Fields: `hooks_enabled`, `pricing_overrides` (HashMap keyed by `PricingEntry.id`), `pricing_currency` (ISO 4217), `currency_cache` (Frankfurter rates + fetched_at), `snapshots_enabled`, `snapshot_retention_days`. |
 | `watcher.rs` | `notify`-based JSONL watcher. Per-file byte offset for incremental reads. **8 MB per-line cap** (resyncs on next newline). Detects sub-agent paths (`<parent_uuid>/subagents/agent-X.jsonl`) and passes `parent_id` to `apply_events` only when the parent component is UUID-shaped. |
 | `parser.rs` | Line → `Vec<ClaudeEvent>`. Handles `system/turn_duration`, content blocks (text/tool_use/tool_result), `usage` block (5 token fields including the nested `cache_creation.ephemeral_5m_input_tokens` / `_1h_input_tokens` buckets). |
 | `pricing.rs` | `ModelPricing` (5 fields), `TokenUsage` (5 fields), `PricingTable` (Vec of `PricingEntry`), `default_pricing_table()` with all 13 SKUs, `merge_overrides`, `estimate_cost`. **Single source of truth** for cost math — never duplicate this logic in agents.rs. |
 | `currency.rs` | Frankfurter HTTP client + curated 10-currency list (USD/EUR/GBP/JPY/CNY/THB/SGD/INR/KRW/AUD). `is_stale` returns true after 24h. |
-| `db.rs` | SQLite (rusqlite, bundled). Two tables: `sessions` (Usage-tab history) and `agent_events` (per-agent event log history). Schema migration adds `cache_write_5m_tokens`, `cache_write_1h_tokens`, `cache_read_tokens` to `sessions` if missing; legacy `cache_tokens` column kept as the sum. `agent_events` is indexed `(session_id, ts DESC)` and written transactionally via `insert_events`. |
+| `db.rs` | SQLite (rusqlite, bundled). Three tables: `sessions` (Usage-tab history), `agent_events` (per-agent event log history), and `file_snapshots` (History-tab pre/post blobs metadata). Schema migration adds `cache_write_5m_tokens`, `cache_write_1h_tokens`, `cache_read_tokens` to `sessions` if missing; legacy `cache_tokens` column kept as the sum. `agent_events` is indexed `(session_id, ts DESC)` and written transactionally via `insert_events`. `file_snapshots` is indexed `(session_id, ts DESC)` and `(tool_use_id)`. |
+| `snapshots.rs` | File snapshot capture/diff/restore subsystem powering the History tab. Single writer to `<data_local>/claude-monitor/snapshots/<session>/`. 1 MB cap per file; restore is reversible via a `pre-restore` snapshot row. Hook-driven — `apply_hook` does not touch this; `hooks::hook_handler` dispatches `capture_pre_edit` / `capture_post_edit` after `apply_hook` returns. |
 | `api.rs` | Anthropic billing API client (optional, key in memory only) |
 
 ### Frontend — `frontend/src/`
 
 | File | Responsibility |
 |---|---|
-| `main.rs` | App shell, 5-tab routing, header indicators, signal wiring, polls `hooks_status` every 2s. **Provides global `RwSignal<PricingTable>`, `RwSignal<CurrencyState>`, and `RwSignal<EventLogMap>` (alias for `HashMap<session_id, VecDeque<LogEntry>>`, capped at 500 per session to mirror the backend ring) via `provide_context`** — leaf components consume via `use_context`. Listens for `agent-status`, `agent-waiting`, and `agent-event` Tauri events. |
+| `main.rs` | App shell, 6-tab routing (Agents / Usage / History / API / Settings / Sponsor), header indicators, signal wiring, polls `hooks_status` every 2s. **Provides global `RwSignal<PricingTable>`, `RwSignal<CurrencyState>`, and `RwSignal<EventLogMap>` (alias for `HashMap<session_id, VecDeque<LogEntry>>`, capped at 500 per session to mirror the backend ring) via `provide_context`** — leaf components consume via `use_context`. Listens for `agent-status`, `agent-waiting`, and `agent-event` Tauri events. |
 | `tauri_bridge.rs` | Thin `wasm-bindgen` wrappers around `window.__TAURI__.core.invoke` and `__TAURI__.event.listen`. Defensive — `is_tauri()` guards no-op when run outside the webview. |
 | `types.rs` | All shared types: `AgentStatus`, `AgentSnapshot` (5 cache fields), `AgentSettings`, `AgentGroup`, `Filter`, `HooksStatus`, `ModelPricing`, `PricingEntry`, `PricingTable`, `CurrencyInfo`, `CurrencyState`, `LogEntry`, `LogSource`. Helpers: `build_groups`, `apply_filter`, `format_money` (thousand-separator commas, currency-aware), `format_date_short` ("DD MMM YY"), `format_datetime` ("DD MMM YYYY HH:MM:SS"), `format_log_time` ("HH:MM:SS" only — used inside the per-agent event log where the date is implied). |
 | `components/agent_grid.rs` | Section renderer — parent tile + indented sub-agent tiles inside a `.group` card whose left edge color = aggregate status. Tile cost respects active currency. |
 | `components/agent_detail.rs` | Side pane shown when a tile is selected. **5-row cost table** (Base Input / 5m Cache Write / 1h Cache Write / Cache Hit & Refresh / Output) reading live from the pricing context. **Recent events** section: `Effect` backfills the last 200 entries via `get_agent_events` on first selection (untracked read of the log map so the effect doesn't re-fire on every streamed event); a `For` over the per-session `VecDeque<LogEntry>` from the context renders newest-first. |
 | `components/usage_panel.rs` | SQLite-backed local usage view. Range pills (Last 7d / 30d / Custom) + two `<input type="date">` for custom range; bars show date and cost without hover. |
+| `components/history_panel.rs` | History tab (issue #3). Sessions grouped by project, expand to a list of edits with timestamp + tool name + file basename. Click an edit → `DiffView` renders the unified diff; **Revert** restores the `pre` snapshot. Listens for `snapshot-restored` Tauri events to refetch. |
+| `components/diff_view.rs` | Pure-CSS unified-diff renderer (`+` green / `-` red / context). Backend produced the unified text via the `similar` crate; this component just splits and styles. |
 | `components/api_usage_panel.rs` | Anthropic billing API view |
-| `components/settings.rs` | Real-time hooks toggle, state-machine thresholds, **editable pricing table** (13 rows × 5 cells, save-on-blur), **display currency** dropdown + manual refresh. |
+| `components/settings.rs` | Real-time hooks toggle, state-machine thresholds, **editable pricing table** (13 rows × 5 cells, save-on-blur), **display currency** dropdown + manual refresh, **snapshots** toggle + retention + disk-usage figure. |
 | `components/sponsor.rs` | Sponsor tab — pitch + 3 buttons opening URLs via `plugin:opener|open_url`. |
 
 ## The state machine (most important to understand)
@@ -190,6 +193,32 @@ Adding a new captured event type (e.g. you start consuming `assistant/thinking` 
 1. Add the enum variant in `parser.rs` (or a new `HookEvent` field).
 2. Add a match arm in `apply_events` / `apply_hook` that calls `agent.record(LogEntry { ... }, &mut log_out)` — pick a stable `kind` string (e.g. `"AssistantThinking"`).
 3. No frontend changes needed: the existing `<For>` renders any kind. If you want kind-specific styling, add a CSS variant `.event-row--<kind>` keyed off `e.source.css_class()` or extend with a new class on the row.
+
+## Working on the snapshot store
+
+The History tab (issue #3) is fed by per-edit file snapshots captured via real-time hooks:
+
+```
+PreToolUse hook   ─►  snapshots::capture_pre_edit   ─►  blob + DB row (phase=pre)
+PostToolUse hook  ─►  snapshots::capture_post_edit  ─►  blob + DB row (phase=post, paired_id=<pre id>)
+```
+
+- **Single writer to the snapshots dir**: `src-tauri/src/snapshots.rs`. Same single-writer rule that already applies to `compute_status` (agents.rs), `record()` (agents.rs), and `estimate_cost` (pricing.rs).
+- **On-disk layout**: `<data_local>/claude-monitor/snapshots/<sanitized-session-id>/<row_id>.bin`. One blob per row; metadata in `file_snapshots` SQLite table indexed by `(session_id, ts DESC)` and `(tool_use_id)`.
+- **Tracked tools**: only `Edit` / `Write` / `MultiEdit` / `NotebookEdit`. Bash file writes (`sed -i`, `>`, `tee`) are intentionally out of scope for v1 — extend `snapshots::TRACKED_TOOLS` if you change this.
+- **Hooks-required**: JSONL fires *after* tool execution and can't capture the pre-state, so the History tab shows a banner telling the user to enable hooks if `prefs.hooks_enabled = false`. JSONL alone is not a fallback path here.
+- **1 MB cap per file**: oversized files store an `oversized=true` row with a zero-byte blob; UI renders "snapshot skipped (file > 1 MB)". Don't try to bypass this — disk growth on large generated files is the v1 concern.
+- **Restore is reversible**: `snapshots::restore` first captures a `pre-restore` snapshot of the file's current bytes (paired_id pointing at the snapshot being restored), then atomic-writes the blob via the same symlink-safe pattern as `settings_writer.rs`. Refuses symlink targets and verifies the blob's SHA-256 before writing.
+- **Special case**: a `Write` against a path that didn't exist yet stores `tool_name='Write:create'` with a zero-byte pre blob. Restore of that pre row *deletes* the file rather than writing empty content.
+- **Event log integration**: `snapshots::emit_snapshot_event` calls `AgentRegistry::record_external(...)` so `Snapshot:PreEdit` / `Snapshot:PostEdit` / `Snapshot:Restored` entries flow through the same `record()` capture point as everything else and show up in the per-agent detail pane stream.
+- **Pruning**: `snapshots::prune_older_than(db, retention_days)` runs once on app startup. Defaults to 14 days (configurable in Settings). No timer-based pruning.
+- **Hook handler latency**: capture reads the file synchronously inside the axum handler so we observe the pre-write bytes. Sub-ms for local files; on a network mount this delays Claude's tool execution by the read time. Documented limitation — see issue #3 plan risks.
+
+Adding a new file-mutating tool (e.g. you want to capture a future `RewriteFile` tool):
+
+1. Append the tool name to `snapshots::TRACKED_TOOLS`.
+2. Teach `snapshots::resolve_target_path` to extract the file path from that tool's `tool_input` shape.
+3. (Optional) Add a special-case in `snapshots::capture` if the tool's create/delete semantics differ from `Edit`/`Write`.
 
 ## Working on currency
 

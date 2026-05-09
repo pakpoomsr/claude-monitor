@@ -219,6 +219,20 @@ impl AgentRegistry {
         *self.settings.write() = new_settings;
     }
 
+    /// Push a log entry into a session's ring buffer from outside the
+    /// `apply_events` / `apply_hook` paths (e.g. the snapshot subsystem
+    /// recording `Snapshot:PreEdit` / `Snapshot:PostEdit` / `Snapshot:Restored`
+    /// events). Routes through the same `record()` capture point so the ring
+    /// cap and frontend stream behave identically. No-op if the session isn't
+    /// tracked yet.
+    pub fn record_external(&self, session_id: &str, entry: LogEntry) {
+        let mut agents = self.agents.write();
+        if let Some(agent) = agents.get_mut(session_id) {
+            let mut sink = Vec::with_capacity(1);
+            agent.record(entry, &mut sink);
+        }
+    }
+
     /// Most-recent N entries from a session's ring buffer (oldest first,
     /// newest last). Returns empty if the agent isn't tracked.
     pub fn events_for(&self, session_id: &str, limit: usize) -> Vec<LogEntry> {
@@ -793,6 +807,13 @@ pub struct HookEvent {
     pub notification_type: Option<String>,
     /// Optional preview text some events may include.
     pub last_assistant_text: Option<String>,
+    /// Raw `tool_input` payload — used by the snapshot subsystem to extract
+    /// `file_path` / `notebook_path` for `Edit`/`Write`/`MultiEdit`/`NotebookEdit`.
+    /// Other code paths ignore it. `Option<Value>` so unknown / missing
+    /// payloads don't break parsing.
+    pub tool_input: Option<serde_json::Value>,
+    /// Raw `tool_response` payload (`PostToolUse`). Reserved for future use.
+    pub tool_response: Option<serde_json::Value>,
 }
 
 fn short_id(id: &str) -> String {

@@ -31,6 +31,9 @@ parking_lot = "0.12"
 axum = "0.8"
 rand = "0.9"
 subtle = "2.6"
+similar = "2.6"
+sha2 = "0.10"
+base64 = "0.22"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

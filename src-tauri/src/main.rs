@@ -10,6 +10,7 @@ mod parser;
 mod prefs;
 mod pricing;
 mod settings_writer;
+mod snapshots;
 mod watcher;
 
 use std::sync::Arc;
@@ -278,6 +279,75 @@ async fn fetch_api_usage(
     }
 }
 
+// ---- Snapshot history (issue #3) ----
+
+#[tauri::command]
+async fn list_session_snapshots(
+    session_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<snapshots::SnapshotRow>, String> {
+    let db = state.db.lock().await;
+    db.list_session_snapshots(&session_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_recent_snapshots(
+    limit: Option<usize>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<snapshots::SnapshotRow>, String> {
+    let db = state.db.lock().await;
+    db.list_recent_snapshots(limit.unwrap_or(200)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_snapshot_diff(
+    snapshot_id: i64,
+    state: tauri::State<'_, AppState>,
+) -> Result<snapshots::DiffResult, String> {
+    snapshots::diff(&state.db, snapshot_id).await
+}
+
+#[tauri::command]
+async fn get_snapshot_content(
+    snapshot_id: i64,
+    state: tauri::State<'_, AppState>,
+) -> Result<snapshots::SnapshotContent, String> {
+    snapshots::get_content(&state.db, snapshot_id).await
+}
+
+#[tauri::command]
+async fn restore_snapshot(
+    snapshot_id: i64,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<snapshots::RestoreResult, String> {
+    snapshots::restore(&state.db, &state.registry, &app, snapshot_id).await
+}
+
+#[tauri::command]
+async fn purge_session_snapshots(
+    session_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<usize, String> {
+    snapshots::prune_session(&state.db, &session_id).await
+}
+
+#[tauri::command]
+async fn get_snapshot_settings(
+    state: tauri::State<'_, AppState>,
+) -> Result<snapshots::SnapshotSettings, String> {
+    Ok(snapshots::get_settings(&state.db).await)
+}
+
+#[tauri::command]
+async fn set_snapshot_settings(
+    settings: snapshots::SnapshotSettings,
+    _state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    snapshots::set_settings(settings.enabled, settings.retention_days);
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -307,6 +377,22 @@ fn main() {
 
             // Spawn the agent-status tick loop (idle/permission detection)
             agents::spawn_tick_loop(app.handle().clone(), registry.clone());
+
+            // Snapshot store: announce path and prune anything older than the
+            // configured retention window. Best-effort — failures are logged
+            // but never fatal.
+            snapshots::announce_root();
+            let db_prune = db.clone();
+            tauri::async_runtime::spawn(async move {
+                let p = prefs::load();
+                let n = snapshots::prune_older_than(&db_prune, p.snapshot_retention_days).await;
+                if n > 0 {
+                    println!(
+                        "[claude-monitor] pruned {n} snapshots older than {} days",
+                        p.snapshot_retention_days
+                    );
+                }
+            });
 
             // Spawn the JSONL watcher
             let app_handle = app.handle().clone();
@@ -432,6 +518,14 @@ fn main() {
             get_currency_state,
             set_active_currency,
             refresh_currency_rates,
+            list_session_snapshots,
+            list_recent_snapshots,
+            get_snapshot_diff,
+            get_snapshot_content,
+            restore_snapshot,
+            purge_session_snapshots,
+            get_snapshot_settings,
+            set_snapshot_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

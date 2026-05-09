@@ -1,5 +1,6 @@
 use crate::agents::{AgentRegistry, AgentSnapshot, HookEvent};
 use crate::db::Database;
+use crate::snapshots;
 use axum::{
     extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode},
@@ -110,6 +111,52 @@ async fn hook_handler(
     }
     if let Some(snap) = maybe_snap {
         emit_status(&state.app, &snap);
+    }
+
+    // Snapshot capture — only for tracked file tools, only when the user
+    // hasn't disabled snapshots in prefs. Dispatched after `apply_hook` so
+    // the disk read doesn't contend with the registry write-lock.
+    let snapshots_on = crate::prefs::load().snapshots_enabled;
+    if snapshots_on
+        && let Some(tool_name) = ev.tool_name.as_deref()
+        && snapshots::TRACKED_TOOLS.contains(&tool_name)
+        && let Some(tool_input) = ev.tool_input.as_ref()
+    {
+        let session_id = ev
+            .agent_id
+            .clone()
+            .unwrap_or_else(|| ev.session_id.clone());
+        let project = ev.cwd.clone().unwrap_or_default();
+        let tu_id = ev.tool_use_id.clone();
+        match ev.hook_event_name.as_str() {
+            "PreToolUse" => {
+                snapshots::capture_pre_edit(
+                    &state.db,
+                    &state.registry,
+                    &state.app,
+                    &session_id,
+                    &project,
+                    tool_name,
+                    tu_id.as_deref(),
+                    tool_input,
+                )
+                .await;
+            }
+            "PostToolUse" => {
+                snapshots::capture_post_edit(
+                    &state.db,
+                    &state.registry,
+                    &state.app,
+                    &session_id,
+                    &project,
+                    tool_name,
+                    tu_id.as_deref(),
+                    tool_input,
+                )
+                .await;
+            }
+            _ => {}
+        }
     }
 
     // Empty 200 — observe-only, never block Claude.
