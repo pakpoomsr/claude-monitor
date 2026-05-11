@@ -220,7 +220,7 @@ still keeps the dashboard working — just less precisely.
 - **Shell command capture** — every Bash invocation Claude runs is logged with
   its command argument; powers the Usage tab's Shell-command breakdown
 - **Optional Anthropic billing API** — paste a key, kept in memory only
-- **Tray icon + toast** — toast pops up when an agent flips to Waiting
+- **Tray icon** — minimize-to-tray with a "Waiting" indicator when an agent needs you
 - **Light + dark themes** — modern glassy design language, reduced-motion friendly
 - **Hardened by default** — strict CSP, owner-only file permissions on Unix,
   symlink-safe writes; see [SECURITY.md](SECURITY.md)
@@ -461,6 +461,7 @@ to talk.
 
 Recently shipped:
 
+- [x] **Pixel-art Office tab** (#8): visualizes every active agent as a sprite at a desk, with deterministic avatar assignment per session
 - [x] **History tab — file diff & one-click rollback** (issue #3): captures pre/post bytes for every Edit/Write/MultiEdit/NotebookEdit via hooks; reversible Revert
 - [x] **Usage tab breakdowns** — Project / Model / Core tools / Shell commands / Activity, plus range-aware totals card
 - [x] **Shell command capture** — Bash invocations logged with their command argument
@@ -475,10 +476,12 @@ Recently shipped:
 Still planned:
 
 - [ ] Pin hook server to a fixed port so registrations survive restarts
-- [ ] Native rate-limit alerts via `tauri-plugin-notification`
+- [ ] Native rate-limit alerts via `tauri-plugin-notification` (also replaces the current placeholder tray notification with a real OS toast)
 - [ ] Export CSV (Usage breakdowns, event log)
 - [ ] Cross-edit diff in History (compare same file across two snapshots)
 - [ ] Capture Bash file mutations (`sed -i`, `>`, `tee`) in the History tab
-- [ ] Sprite skin picker
 - [ ] Detect Claude Code subscription plan
-- [ ] Code-sign the Windows installer to clear SmartScreen
+- [ ] Code-sign the Windows installer + notarize the macOS build to clear SmartScreen / Gatekeeper warnings
+- [ ] Auto-prune the `agent_events` table on startup (currently grows unboundedly — see CLAUDE.md known limitations)
+- [ ] Consume `assistant/thinking` content blocks so extended-thinking output shows in the event log
+- [ ] Custom avatar picker for the Office tab — let users override the auto-assigned pixel sprite per agent
