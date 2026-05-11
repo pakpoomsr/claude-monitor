@@ -1810,3 +1810,79 @@ code, pre, .mono {
     text-align: right;
 }
 
+/* =====================================================================
+   Office tab (pixel-art canvas)
+   ===================================================================== */
+.office-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding: 20px 24px;
+}
+.office-stage {
+    position: relative;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--panel-radius);
+    padding: 12px;
+    box-shadow: var(--shadow-md);
+    /* Logical canvas is 240x160. We scale up 3x via CSS so it stays
+       crisp on hi-DPI displays without changing the canvas backing
+       store size. image-rendering keeps each upscaled pixel sharp. */
+    line-height: 0;
+}
+.office-canvas {
+    display: block;
+    width: 720px;
+    height: 480px;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    background: var(--panel-2);
+    border-radius: 8px;
+}
+.office-empty {
+    position: absolute;
+    inset: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.35);
+    border-radius: 8px;
+    padding: 20px;
+    text-align: center;
+    pointer-events: none;
+}
+:root[data-theme="light"] .office-empty {
+    background: rgba(255, 255, 255, 0.45);
+}
+.office-legend {
+    display: flex;
+    gap: 18px;
+    font-size: 12px;
+    flex-wrap: wrap;
+}
+.legend-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.legend-swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    image-rendering: pixelated;
+}
+.legend-working { background: var(--working); }
+.legend-waiting { background: var(--waiting); }
+.legend-idle    { background: var(--idle); }
+.legend-error   { background: var(--error); }
+
+@media (max-width: 820px) {
+    .office-canvas {
+        width: 480px;
+        height: 320px;
+    }
+}
+
