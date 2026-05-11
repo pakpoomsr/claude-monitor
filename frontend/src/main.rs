@@ -1,4 +1,5 @@
 mod components;
+mod office;
 mod tauri_bridge;
 mod types;
 
@@ -7,8 +8,8 @@ use std::collections::{HashMap, VecDeque};
 
 use components::{
     agent_detail::AgentDetail, agent_grid::AgentGrid, api_usage_panel::ApiUsagePanel,
-    history_panel::HistoryPanel, settings::SettingsPanel, sponsor::SponsorPanel,
-    usage_panel::UsagePanel,
+    history_panel::HistoryPanel, office_panel::OfficePanel, settings::SettingsPanel,
+    sponsor::SponsorPanel, usage_panel::UsagePanel,
 };
 use tauri_bridge::{invoke_no_args, listen};
 use types::{apply_filter, build_groups, AgentGroup, AgentSnapshot, AgentStatus, CurrencyState, Filter, HooksStatus, LogEntry, PricingTable};
@@ -21,6 +22,7 @@ const FRONTEND_RING_CAP: usize = 500;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Agents,
+    Office,
     Usage,
     History,
     Api,
@@ -261,6 +263,7 @@ fn App() -> impl IntoView {
 
             <nav class="tabs">
                 <TabButton tab=Tab::Agents   current=tab set_tab label="Agents" />
+                <TabButton tab=Tab::Office   current=tab set_tab label="Office" />
                 <TabButton tab=Tab::Usage    current=tab set_tab label="Usage" />
                 <TabButton tab=Tab::History  current=tab set_tab label="History" />
                 <TabButton tab=Tab::Api      current=tab set_tab label="API" />
@@ -302,6 +305,7 @@ fn App() -> impl IntoView {
                             })}
                         </div>
                     }.into_any(),
+                    Tab::Office => view! { <OfficePanel agents /> }.into_any(),
                     Tab::Usage => view! { <UsagePanel /> }.into_any(),
                     Tab::History => view! { <HistoryPanel /> }.into_any(),
                     Tab::Api => view! { <ApiUsagePanel /> }.into_any(),
