@@ -9,6 +9,7 @@ No JavaScript framework. Light + dark themes. ~10 MB binary.
 ## Demo
 
 ![App demo](./assets/demo.gif)
+![App demo](./assets/demo1.gif)
 
 ---
 
